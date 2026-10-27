@@ -18,6 +18,10 @@ PS5.
 executable. It runs the files of your own Xbox retail disc.
 
 <p align="center">
+  <a href="https://recompstore.com/game/PPSA99023"><img src="https://recompstore.com/assets/press/badge-dark.svg" alt="Get it on RecompStore" height="56"></a>
+</p>
+
+<p align="center">
   <img src="docs/media/ps5-title.jpg" alt="Title screen" width="49%">
   <img src="docs/media/ps5-menu.jpg" alt="Main menu with PlayStation button prompts" width="49%">
   <img src="docs/media/ps5-jump.jpg" alt="Gameplay: Press Cross to jump" width="49%">
