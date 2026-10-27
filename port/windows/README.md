@@ -198,8 +198,8 @@ redistribute it. Packaging again preserves existing save folders.
 - CMake 3.20+
 - Python 3.10+ with `capstone` (`pip install capstone`)
 
-The game files go in `Assets/<target>/` first; see "Supply your game files"
-in the [README](../../README.md#supply-your-game-files).
+The game files go in `Assets/<target>/` first; see "Build from your own Xbox files"
+in the [upstream README](https://github.com/FulGerNet/rePOP#build-from-your-own-xbox-files).
 
 ## Build
 
