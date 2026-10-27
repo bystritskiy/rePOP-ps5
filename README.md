@@ -17,6 +17,18 @@ PS5.
 **You need your own game.** The app contains no game data and no Xbox
 executable. It runs the files of your own Xbox retail disc.
 
+<p align="center">
+  <img src="docs/media/ps5-title.jpg" alt="Title screen" width="49%">
+  <img src="docs/media/ps5-menu.jpg" alt="Main menu with PlayStation button prompts" width="49%">
+  <img src="docs/media/ps5-jump.jpg" alt="Gameplay: Press Cross to jump" width="49%">
+  <img src="docs/media/ps5-camera.jpg" alt="Gameplay: R1 and L1 camera prompts" width="49%">
+  <img src="docs/media/ps5-cutscene.jpg" alt="Cutscene" width="49%">
+  <img src="docs/media/ps5-graphics.jpg" alt="reSOT Options, Graphics: internal resolution 1440p" width="49%">
+</p>
+
+<p align="center"><sub>Screenshots taken on a PS5 with the US disc's files,
+internal resolution set to 1440p (3x) in reSOT Options.</sub></p>
+
 ## Status
 
 Version **01.003.004**, based on upstream reSOT v0.3.4. Tested on one
@@ -26,9 +38,14 @@ Seen on the console:
 
 - title screen, menus, the profile keyboard, the opening cutscene and early
   gameplay, with correct lighting, fog and textures;
-- about 60 fps in play;
+- about 60 fps in play at 1440p internal resolution (3x, scaled to the
+  1920x1080 output) with the Full graphics preset;
 - the app finding the disc files in `/data/reSOT/xbox-retail`;
-- PlayStation buttons in the game's prompts.
+- PlayStation buttons in the game's prompts (Cross, Circle, L1 and R1 seen
+  so far).
+
+A new install starts at 1x internal resolution; 1440p, the graphics preset,
+the frame limit and VSync are set in the game's reSOT Options, Graphics.
 
 Not checked yet: sound, controller input through a whole level, rumble,
 saves, later levels, the screen shown when no game is found, game files on

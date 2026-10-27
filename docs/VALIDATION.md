@@ -81,6 +81,15 @@ renderer reports, 97 were 58-60 fps, 2 were 52-58, one 30.6 right after the
 menu and two near 0 at start while shaders compiled. Not run: the
 missing-files screen, USB and extended storage.
 
+US disc files: with the files of an original US disc (same `default.xbe`,
+SHA-256 `753C58B1...`, `prince.bf` 365,119,488 bytes) in
+`/data/reSOT/xbox-retail`, the release build ran in English with
+`[BUTTONS] PlayStation glyphs drawn into the button atlas` in the log, so the
+atlas hash matches that disc as well. Screenshots (in `docs/media/ps5-*.jpg`)
+show Cross and Circle in the menus and gameplay prompts and the L1 and R1
+badges in the camera prompt. With 1440p (3x) and the Full preset set in reSOT
+Options, 17 of the first 19 renderer reports were 58-60 fps.
+
 `ps5-native-tool` built from the pinned PS5_Vulkan `tooling/native` sources
 (command in `port/ps5/README.md`) signs the linked retail ELF to the same
 bytes as the tool binary used for the runs above.
