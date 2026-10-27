@@ -19,8 +19,8 @@ executable. It runs the files of your own Xbox retail disc.
 
 <p align="center">
   <a href="https://recompstore.com/game/PPSA99023"><picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/media/recompstore-badge-light.svg">
-    <img src="docs/media/recompstore-badge-dark.svg" alt="Get it on RecompStore" height="56">
+    <source media="(prefers-color-scheme: dark)" srcset="https://recompstore.com/assets/press/badge-light.svg">
+    <img src="https://recompstore.com/assets/press/badge-dark.svg" alt="Get it on RecompStore" height="56">
   </picture></a>
 </p>
 
