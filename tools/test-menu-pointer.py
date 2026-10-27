@@ -13,6 +13,12 @@ for target in ('demo', 'retail'):
     cmake += [f'add_executable(pointer-{target} "{source}")',
               f'target_compile_definitions(pointer-{target} PRIVATE RESOT_RUNTIME_{target.upper()}=1)',
               f'add_test(NAME pointer-{target} COMMAND pointer-{target})']
+    if os.name != 'nt':
+        runtime = (root / 'port/third_party/xboxrecomp/src').as_posix()
+        cmake += [f'target_compile_definitions(pointer-{target} PRIVATE RESOT_PS5=1)',
+                  f'target_include_directories(pointer-{target} PRIVATE "{runtime}" "{runtime}/kernel")']
+        if os.uname().sysname != 'Darwin':
+            cmake += [f'target_link_libraries(pointer-{target} PRIVATE m)']
 (project / 'CMakeLists.txt').write_text('\n'.join(cmake) + '\n')
 environment = {k.upper() if os.name == 'nt' else k: v for k, v in os.environ.items()}
 for args in [('cmake', '-S', str(project), '-B', str(directory / 'native')),

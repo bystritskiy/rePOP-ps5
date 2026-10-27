@@ -635,6 +635,8 @@ ULONG_PTR __stdcall xbox_MmGetPhysicalAddress(PVOID BaseAddress);
 VOID    __stdcall xbox_MmPersistContiguousMemory(PVOID BaseAddress, ULONG NumberOfBytes, BOOLEAN Persist);
 ULONG   __stdcall xbox_MmQueryAddressProtect(PVOID VirtualAddress);
 VOID    __stdcall xbox_MmSetAddressProtect(PVOID BaseAddress, ULONG NumberOfBytes, ULONG NewProtect);
+/* RE-SoT: protection the title asks for; on PS5 it never narrows a shared 16 KiB host page. */
+BOOL xbox_ProtectGuestRange(PVOID base, SIZE_T size, DWORD protect, PDWORD old);
 ULONG   __stdcall xbox_MmQueryAllocationSize(PVOID BaseAddress);
 PVOID   __stdcall xbox_MmClaimGpuInstanceMemory(ULONG NumberOfBytes, PULONG NumberOfPaddingBytes);
 VOID    __stdcall xbox_MmLockUnlockBufferPages(PVOID BaseAddress, ULONG NumberOfBytes, BOOLEAN UnlockPages);
@@ -672,7 +674,7 @@ NTSTATUS __stdcall xbox_NtWriteFile(
     PLARGE_INTEGER ByteOffset);
 
 NTSTATUS __stdcall xbox_NtClose(HANDLE Handle);
-#if defined(_WIN32) || (defined(__ANDROID__) && RESOT_RUNTIME_RETAIL)
+#if defined(_WIN32) || ((defined(__ANDROID__) || defined(RESOT_PS5)) && RESOT_RUNTIME_RETAIL)
 /* RE-SoT: abandoned Android retail profile searches also need close cleanup. */
 void xbox_dir_context_drop(HANDLE FileHandle);
 #endif

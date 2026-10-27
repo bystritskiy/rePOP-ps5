@@ -100,13 +100,24 @@ int guest_vmem_init(ptrdiff_t offset, uint64_t mirror_lo, uint64_t mirror_top)
     /* RE-SoT: Android's VirtualQuery tracks our mappings only, not host free
      * runs. Ask VirtualAlloc for the range directly: its fixed-address mmap
      * refuses collisions rather than replacing existing mappings. */
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(RESOT_PS5_DIRECT_MEMORY) /* RE-SoT: PS5 owns the full guest arena. */
     bytes = (GUEST_VMEM_TOP - s_lo) & ~(size_t)0xFFFF;
 #else
     bytes = host_free_run((uintptr_t)host, GUEST_VMEM_TOP - s_lo) & ~(size_t)0xFFFF;
 #endif
+#if defined(RESOT_PS5_DIRECT_MEMORY)
+    /* RE-SoT: the outer 4 GiB reservation already owns these addresses.
+     * Back this bounded upper-user window once in direct memory (about
+     * 192 MiB for 64 MiB RAM + its mirrors), rather than charging every
+     * 4 KiB guest commit to a separate 64 KiB physical allocation. The guest
+     * page table below still enforces reserve/commit and zeros freed pages.
+     * Native protection remains at PS5's 16 KiB granularity. */
+    if (bytes && !VirtualAlloc(host, bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE))
+        bytes = 0;
+#else
     if (bytes && !VirtualAlloc(host, bytes, MEM_RESERVE, PAGE_NOACCESS))
         bytes = 0;
+#endif
     if (!bytes) {
         fprintf(stderr, "  Extended VMA: could not reserve host memory at %p (error %lu);"
                         " the tracker stays off\n", host, GetLastError());

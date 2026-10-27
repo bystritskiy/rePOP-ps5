@@ -29,6 +29,10 @@
 #include <sched.h>
 #include <fenv.h>
 #include <sys/mman.h>
+#if defined(RESOT_PS5) && !defined(MAP_NORESERVE)
+/* RE-SoT: FreeBSD has no Linux MAP_NORESERVE; PROT_NONE reserves the span. */
+#define MAP_NORESERVE 0
+#endif
 #if defined(__ANDROID__)
 #include <sys/syscall.h> /* RE-SoT: memfd_create below API 30 */
 #include <sys/resource.h> /* RE-SoT: normalize inherited mobile worker priority. */
@@ -38,6 +42,11 @@
 #include <sys/stat.h>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
+#elif defined(RESOT_PS5)
+/* RE-SoT: the PS5 host uses the FreeBSD sysctl interface, not Linux sysinfo. */
+#include <sys/types.h>
+#include <sys/sysctl.h>
+#include <sys/stat.h>
 #else
 #include <sys/sysinfo.h>
 #endif
@@ -308,6 +317,11 @@ typedef struct w32_object {
     /* file mapping / fd-backed file handle */
     int             fd;
     SIZE_T          map_size;
+#if defined(RESOT_PS5_DIRECT_MEMORY)
+    /* RE-SoT: direct-memory objects retain views after CloseHandle. */
+    void *mapping_payload;
+    void (*mapping_release)(void *);
+#endif
     char           *file_path;
 } w32_object;
 
@@ -433,6 +447,10 @@ static void obj_release(w32_object *o)
         if (o->fd >= 0) close(o->fd);
         free(o->file_path);
     } else if (o->kind == K_FILEMAP) {
+#if defined(RESOT_PS5_DIRECT_MEMORY)
+        /* RE-SoT: release the handle reference; views own separate references. */
+        if (o->mapping_release) o->mapping_release(o->mapping_payload);
+#endif
         if (o->fd >= 0) close(o->fd);
     } else if (o->kind == K_WAITABLE_TIMER) {
         /* Waitable timers: no special cleanup needed */
@@ -1188,8 +1206,30 @@ SIZE_T HeapSize(HANDLE heap, DWORD flags, LPCVOID mem)
 /* Virtual memory                                                        */
 /* ===================================================================== */
 
+#if defined(RESOT_PS5_DIRECT_MEMORY)
+/* RE-SoT: keep native mapping payloads inside validated Win32 handles. */
+HANDLE w32_direct_mapping_handle(void *payload, void (*release)(void *))
+{
+    w32_object *o = obj_alloc(K_FILEMAP);
+    o->fd = -1; o->mapping_payload = payload; o->mapping_release = release;
+    return (HANDLE)o;
+}
+void *w32_direct_mapping_payload(HANDLE handle)
+{
+    w32_object *o = obj_of(handle);
+    return o && o->kind == K_FILEMAP ? o->mapping_payload : NULL;
+}
+#endif
+
 static int prot_from_page(DWORD protect)
 {
+#if defined(RESOT_PS5)
+    /* RE-SoT: guest instructions are statically lifted C, never native code
+     * in this mapping. Xbox executable pages need data access, not PS5 JIT. */
+    if ((protect & 0xFF) == PAGE_EXECUTE || (protect & 0xFF) == PAGE_EXECUTE_READ)
+        return PROT_READ;
+    if ((protect & 0xFF) == PAGE_EXECUTE_READWRITE) return PROT_READ | PROT_WRITE;
+#endif
     switch (protect & 0xFF) {
     case PAGE_NOACCESS:          return PROT_NONE;
     case PAGE_READONLY:          return PROT_READ;
@@ -1269,9 +1309,12 @@ void w32_compat_own_range(void *base, SIZE_T size)
 static int owned_range(const void *address, SIZE_T size)
 {
     uintptr_t a = (uintptr_t)address;
-    return s_owned_hi && a >= s_owned_lo && size <= s_owned_hi - a;
+    /* RE-SoT: reject addresses above the reservation before subtracting;
+     * unsigned underflow otherwise authorizes destructive MAP_FIXED. */
+    return s_owned_hi && a >= s_owned_lo && a < s_owned_hi && size <= s_owned_hi - a;
 }
 
+#if !defined(RESOT_PS5_DIRECT_MEMORY) /* RE-SoT: PS5 host provides direct-memory VM. */
 LPVOID VirtualAlloc(LPVOID address, SIZE_T size, DWORD allocationType, DWORD protect)
 {
     int prot  = prot_from_page(protect);
@@ -1292,12 +1335,14 @@ LPVOID VirtualAlloc(LPVOID address, SIZE_T size, DWORD allocationType, DWORD pro
     if (owned) flags |= MAP_FIXED;   /* RE-SoT: replaces our own reservation */
 
     void *p;
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(RESOT_PS5)
     /* RE-SoT: a pure reservation commits nothing. Mapped read-write, a 4 GB
      * guest reservation is refused by the kernel's overcommit heuristic. */
     if ((allocationType & MEM_RESERVE) && !(allocationType & MEM_COMMIT)) {
         prot = PROT_NONE;
+#ifdef MAP_NORESERVE
         flags |= MAP_NORESERVE;
+#endif
         p = mmap(address, size, PROT_NONE, flags, -1, 0);
     } else
 #endif
@@ -1311,7 +1356,7 @@ LPVOID VirtualAlloc(LPVOID address, SIZE_T size, DWORD allocationType, DWORD pro
         SetLastError(ERROR_NOT_ENOUGH_MEMORY);
         return NULL;
     }
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(RESOT_PS5)
     /* RE-SoT: kernels before 4.17 ignore MAP_FIXED_NOREPLACE and treat the
      * address as a hint; a different address is a refusal, as on Win32. */
     if (address && p != address) {
@@ -1362,8 +1407,13 @@ BOOL VirtualFree(LPVOID address, SIZE_T size, DWORD freeType)
 BOOL VirtualProtect(LPVOID address, SIZE_T size, DWORD newProtect, PDWORD oldProtect)
 {
     if (oldProtect) *oldProtect = PAGE_READWRITE;
-    return mprotect(address, size, prot_from_page(newProtect)) == 0;
+    /* RE-SoT: propagate an actual failure rather than a stale last-error. */
+    if (mprotect(address, size, prot_from_page(newProtect)) == 0) return TRUE;
+    SetLastError(ERROR_INVALID_ADDRESS);
+    return FALSE;
 }
+
+#endif /* RE-SoT: POSIX VM implementation */
 
 /* ===================================================================== */
 /* Time                                                                  */
@@ -1495,7 +1545,7 @@ VOID SecureZeroMemory(PVOID ptr, SIZE_T cnt)
 {
 #if defined(__APPLE__)
     memset_s(ptr, cnt, 0, cnt);
-#elif defined(__ANDROID__)
+#elif defined(__ANDROID__) || defined(RESOT_PS5)
     /* RE-SoT: bionic has no explicit_bzero; a volatile store loop is not elided. */
     volatile unsigned char *p = (volatile unsigned char *)ptr;
     while (cnt--) *p++ = 0;
@@ -1792,6 +1842,11 @@ static int anon_map_fd(const char *name)
     int fd = shm_open(shm_name, O_CREAT | O_RDWR | O_EXCL, 0600);
     if (fd >= 0) shm_unlink(shm_name);
     return fd;
+#elif defined(RESOT_PS5)
+    /* RE-SoT: FreeBSD's anonymous shm object has no name or unlink race.
+     * Guest memory is data; this never requests executable/JIT permission. */
+    (void)name;
+    return shm_open(SHM_ANON, O_RDWR, 0600);
 #elif defined(__ANDROID__)
     /* RE-SoT: memfd_create is declared from API 30; the system call exists
      * on every arm64 kernel Android supports (3.17+). */
@@ -1801,6 +1856,7 @@ static int anon_map_fd(const char *name)
 #endif
 }
 
+#if !defined(RESOT_PS5_DIRECT_MEMORY) /* RE-SoT: direct-memory mapping backend. */
 HANDLE CreateFileMappingA(HANDLE file, LPSECURITY_ATTRIBUTES sa, DWORD protect,
                           DWORD maxSizeHigh, DWORD maxSizeLow, LPCSTR name)
 {
@@ -1860,8 +1916,11 @@ LPVOID MapViewOfFileEx(HANDLE mapping, DWORD access, DWORD offHigh, DWORD offLow
             return NULL;
         }
         flags |= MAP_FIXED;
-#else
+#elif !defined(RESOT_PS5)
         flags |= MAP_FIXED;
+#else
+        /* RE-SoT: outside our reservation an address is only a hint. Never
+         * overwrite a PS5 loader mapping; the exact-address check follows. */
 #endif
     }
 
@@ -1948,6 +2007,8 @@ SIZE_T VirtualQuery(LPCVOID address, PMEMORY_BASIC_INFORMATION buffer, SIZE_T le
     return sizeof(*buffer);
 }
 
+#endif /* RE-SoT: POSIX mappings and VirtualQuery */
+
 BOOL GlobalMemoryStatusEx(LPMEMORYSTATUSEX b)
 {
     if (!b) return FALSE;
@@ -1979,6 +2040,21 @@ BOOL GlobalMemoryStatusEx(LPMEMORYSTATUSEX b)
     b->ullAvailPhys     = avail;
     b->ullTotalPageFile = b->ullTotalPhys + (ULONGLONG)swap.xsu_total;
     b->ullAvailPageFile = b->ullAvailPhys + (ULONGLONG)swap.xsu_avail;
+#elif defined(RESOT_PS5)
+    /* RE-SoT: query actual memory; leave availability conservative if the
+     * sandbox does not expose the VM page counters. */
+    uint64_t total = 0;
+    size_t len = sizeof(total);
+    if (sysctlbyname("hw.physmem", &total, &len, NULL, 0) != 0) return FALSE;
+    unsigned free_pages = 0;
+    len = sizeof(free_pages);
+    if (sysctlbyname("vm.stats.vm.v_free_count", &free_pages, &len, NULL, 0) != 0)
+        free_pages = 0;
+    long page = sysconf(_SC_PAGESIZE);
+    b->ullTotalPhys = total;
+    b->ullAvailPhys = page > 0 ? (ULONGLONG)free_pages * (ULONGLONG)page : 0;
+    b->ullTotalPageFile = b->ullTotalPhys;
+    b->ullAvailPageFile = b->ullAvailPhys;
 #else
     struct sysinfo si;
     if (sysinfo(&si) != 0) return FALSE;

@@ -1,5 +1,11 @@
 # Regression tests
 
+## PS5 package inventory
+
+Run `python3 tools/tests/test-ps5-inventory.py`. Finder `.DS_Store` files are
+excluded, matching MkPFS; ordinary game files, hidden game files and their
+content changes still participate in the roundtrip hash comparison.
+
 ## Android diagnostic archive and expiry
 
 Run `python tools/test-diagnostic-archive.py` with a JDK on PATH. It uses the
@@ -48,10 +54,13 @@ game files or Android device and writes classes under ignored
 `build/touch-overlay-tests/`. Canvas rendering, touch hit testing and JNI
 controller delivery still require the Android build and device checks.
 
-## Menu pointer (Windows host test, both Xbox layouts)
+## Menu pointer (Windows and POSIX host tests, both Xbox layouts)
 
 Run `python tools/test-menu-pointer.py`. It compiles the production shared
 mouse/touch bridge against synthetic guest objects for both target layouts.
+On POSIX it uses the PS5 bounded guest-read path with synthetic RAM; on
+Windows it uses VirtualQuery. The real PS5 guest VMA and decommit path are
+also checked by `python3 tools/test-ps5.py` under ASan/UBSan.
 Checks include row selection, separate direction/activation releases, a single
 activation per tap, drag cancellation, page changes during a press, physical
 input priority, idle movie polling, Bink taps, cinematic viewport state,

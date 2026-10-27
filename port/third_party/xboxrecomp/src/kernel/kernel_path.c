@@ -46,8 +46,13 @@ typedef struct {
     const char* sub_posix;  /* sub-directory, POSIX slash form           */
 } path_rule;
 
+/* RE-SoT (PS5): the console host is POSIX like Android and uses the same
+ * retail device rules, partition images and case resolution. Without them
+ * the title's first disc file was not found and it returned to the
+ * dashboard (HalReturnToFirmware routine 2, observed on the PS5). The same
+ * guard is used in kernel_file.c, kernel_bridge.c and kernel.h. */
 static const path_rule s_rules[] = {
-#if defined(__ANDROID__) && RESOT_RUNTIME_RETAIL
+#if (defined(__ANDROID__) || defined(RESOT_PS5)) && RESOT_RUNTIME_RETAIL
     /* RE-SoT: retail resolves U:/T: to partition1. Store actual save files
      * in ordinary folders, independently of the synthetic raw devices. */
     { "\\Device\\Harddisk0\\Partition1\\UDATA", 1, NULL, "/UDATA" },
@@ -501,7 +506,7 @@ static char s_game_dir[MAX_PATH];
 static char s_save_dir[MAX_PATH];
 static BOOL s_initialized = FALSE;
 
-#if defined(__ANDROID__)
+#if (defined(__ANDROID__) || defined(RESOT_PS5))
 #include <dirent.h>
 #include <strings.h>
 /* RE-SoT: Xbox paths are case-insensitive and the title does not ask for its
@@ -574,7 +579,7 @@ static void mkdir_p(const char* path)
         xbox_log(XBOX_LOG_WARN, XBOX_LOG_PATH, "mkdir %s: %s", tmp, strerror(errno));
 }
 
-#if defined(__ANDROID__) && RESOT_RUNTIME_RETAIL
+#if (defined(__ANDROID__) || defined(RESOT_PS5)) && RESOT_RUNTIME_RETAIL
 /* RE-SoT: match the Windows raw devices for retail's XAPI utility-drive
  * mount. Without Partition0's table and Partition5's backing file, startup
  * returns to the dashboard before reaching the renderer. These are sparse
@@ -669,7 +674,7 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
     strip_trailing_slash(s_game_dir);
     strip_trailing_slash(s_save_dir);
 
-#if defined(__ANDROID__) && RESOT_RUNTIME_RETAIL
+#if (defined(__ANDROID__) || defined(RESOT_PS5)) && RESOT_RUNTIME_RETAIL
     /* RE-SoT: create device backing before the first guest file request. */
     android_partition_images();
 #endif
@@ -691,7 +696,7 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
     if (!s_initialized)
         xbox_path_init(NULL, NULL);
 
-#if defined(__ANDROID__) && RESOT_RUNTIME_RETAIL
+#if (defined(__ANDROID__) || defined(RESOT_PS5)) && RESOT_RUNTIME_RETAIL
     /* RE-SoT: bare devices must support offset reads and size queries. */
     if (android_partition_path(xbox_path, host_path_buf, buf_size)) {
         fprintf(stderr, "  [PATH] %s -> partition image\n", xbox_path);
@@ -723,7 +728,7 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
 
 translate:
     {
-#if defined(__ANDROID__) && RESOT_RUNTIME_RETAIL
+#if (defined(__ANDROID__) || defined(RESOT_PS5)) && RESOT_RUNTIME_RETAIL
         /* RE-SoT: retain the requested path alongside the bridge's status,
          * including storage failures beyond the kernel-call log budget. */
         /* RE-SoT: avoid synchronous log I/O for every file lookup per frame. */
@@ -755,7 +760,7 @@ translate:
                 host_path_buf[--n] = '\0';
         }
 
-#if defined(__ANDROID__)
+#if (defined(__ANDROID__) || defined(RESOT_PS5))
         resolve_case(host_path_buf, strlen(base_dir));
 #endif
         XBOX_TRACE(XBOX_LOG_PATH, "%s -> %s", xbox_path, host_path_buf);

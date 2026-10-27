@@ -1,5 +1,95 @@
 # Validation log
 
+## PS5 port, 2026-10-22 to 2026-10-27 (this fork)
+
+What follows was run on a macOS host and on one console: FW 13.40,
+kstuff-lite 1.11, ShadowMountPlus 1.7-beta5fix1. The retail disc files were
+the user's own; the extracted `default.xbe` matches `RESOT_XBE_SHA256` in
+`source/xbox-retail/target.h` (`python3 tools/check-ps5-game.py
+Assets/xbox-retail` passes). `source/*/gen/` is unchanged.
+
+**Build and package (upstream v0.3.0, v0.3.3 and v0.3.4 merged in turn).**
+`cmake --build build/ps5/game-xbox-retail` and `game-xbox-demo`, then
+`tools/link-ps5-game.sh <target>` in the Docker builder: both compile and
+link; the linked PIEs have no application exports. `python3
+tools/package-ps5-game.py` signs eboot.bin; eboot and the pinned clean-room
+libc.prx pass FSELF inspection. With `--pack-python` (MkPFS 1.1.0), pack
+`--verify` and a deep unpack matched all 209 packaged files by size and
+SHA-256 (v0.3.0 and v0.3.3 images). A first roundtrip found two Finder
+`.DS_Store` files that MkPFS leaves out; the inventory now ignores those
+only (`python3 tools/tests/test-ps5-inventory.py`).
+
+**Host tests.** `python3 tools/test-ps5.py` (ASan/UBSan: DualSense mapping,
+mock AudioOut with drift-controlled resampling, scalar MMIO, direct-memory
+mappings and the retail guest tracker), `python3 tools/test-menu-pointer.py`
+(demo and retail): pass. These do not call PS5 system functions.
+`tools/check-hlsl.py` needs Windows; the host shaders were built with DXC
+v1.9.2609 (`tools/build-native-shaders.py`) instead.
+
+**On the console (2026-10-27).** Installed as a ShadowMountPlus folder game,
+`/data/homebrew/PPSA99023` (`package-ps5-game.py` without `--pack-python`,
+then `python3 -I tools/deploy-ps5-folder.py`); ShadowMountPlus's `debug.log`
+shows `nullfs mounted: /data/homebrew/PPSA99023 -> /system_ex/app/PPSA99023`.
+Logs were read over FTP and from klog. Fixed on the way, each seen on the
+console before and after:
+
+- The whole title ran on one CPU (`[PERF]` 100% of one core; a stderr write
+  took up to 840 ms). The main thread now takes CPUs `0x1FFF` before any
+  other thread exists, and stdout/stderr go through a pipe to a writer
+  thread.
+- `SYSTEM_XO_VIOLATION` at the first APU register access: the MMIO decoder
+  read the faulting instruction, and eboot code is execute-only. It now
+  reads a copy of the code segment from `/app0/eboot.bin` (SELF segment 0,
+  equal to the linked ELF's text), placed with `sceKernelGetModuleInfo`.
+- DSOUND's store to Xbox VA 0x808E8014 faulted: the title's
+  `MmSetAddressProtect(0x808EB000, 0x1000, PAGE_READONLY)` had covered the
+  whole 16 KiB host page. Protection that removes access now applies to
+  whole host pages only.
+- 10 million `KeWaitForSingleObject` calls with no GPU work: D3D's
+  BlockOnFence failed at once because the PS5 host never called
+  `xbox_Nv2aNotifyEvent`, as the Windows and Android hosts do.
+
+Seen in the user's screenshots: the press-start screen, the main menu with
+reSOT Options, the profile name keyboard, the palace balcony cutscene and an
+in-level tutorial frame, with correct lighting, fog and textures. With the
+button glyphs redrawn into `prince.bf` by a build-time tool (since replaced,
+below) the profile screen shows the ✕/○/□/△ prompts upright and in place;
+L1/R1, L2/R2, OPTIONS and TOUCH PAD have not been seen in a prompt yet.
+
+**App without game files.** For the homebrew catalogs, which take an app
+archive without game files, `main_ps5.c` looks for the disc files in
+`/app0/game`, `/data/reSOT/xbox-retail`, `/mnt/usb0-7/reSOT/xbox-retail` and
+`/mnt/ext0-1/reSOT/xbox-retail`; with none usable it shows a CPU VideoOut
+screen saying where to copy them, sends a notification and closes on Cross.
+`src/buttons_ps5.c` now redraws the glyphs in the decoded copy of the atlas
+when the renderer uploads it. On the disc's atlas a host harness (ASan/UBSan)
+gave output identical to the build-time tool's in all 131,072 pixels and
+left a texture with another hash unchanged. `package-ps5-game.py --zip`
+wrote `bin/ps5/PPSA99023-01.003.004.zip` (about 17 MB, no `game/`; FSELF
+integrity valid).
+
+On the console the app, installed without `game/`, found the disc files
+moved to `/data/reSOT/xbox-retail` (`[BOOT] game files:
+/data/reSOT/xbox-retail` in the log) and ran to the menu and play. The
+`prince.bf` there had no build-time glyphs, and the log showed `[BUTTONS]
+PlayStation glyphs drawn into the button atlas`; the prompts on screen
+showed PlayStation buttons. FTP could not create the
+game folder while `/data/reSOT`, created by the app, was 0755 (`550
+Permission denied`); the app now creates `/data/reSOT` and the game folder
+with mode 0777 (built, not yet run). Frame rate in a longer session: of 102
+renderer reports, 97 were 58-60 fps, 2 were 52-58, one 30.6 right after the
+menu and two near 0 at start while shaders compiled. Not run: the
+missing-files screen, USB and extended storage.
+
+`ps5-native-tool` built from the pinned PS5_Vulkan `tooling/native` sources
+(command in `port/ps5/README.md`) signs the linked retail ELF to the same
+bytes as the tool binary used for the runs above.
+
+Not checked: sound, controller input in play, saves, levels past
+the first frames, the image (`.ffpfsc`) install path, the demo target on a
+console, and Windows and Android builds of the shared runtime changes
+(`RE-SoT`, under `RESOT_PS5` or with an unchanged non-PS5 path).
+
 ## 2026-10-26: v0.3.4, rejected pipelines, BlockOnFence release, demo KickOff, logo
 
 Reports: GitHub #9 (Galaxy S21, Exynos 2100 / Mali-G78, Android 15) with its

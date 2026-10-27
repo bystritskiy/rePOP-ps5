@@ -28,7 +28,10 @@
 
 #include <stdint.h>
 
-#if defined(_WIN32)
+#if defined(RESOT_PS5)
+/* RE-SoT: the PS5 decoder handles Clang scalar forms and POSIX fault registers. */
+#include "mmio_decode_ps5.h"
+#elif defined(_WIN32)
 #include <windows.h>
 
 /* Service one register access. dev is passed straight back to the callbacks. */

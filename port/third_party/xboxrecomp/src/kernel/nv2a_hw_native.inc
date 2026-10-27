@@ -16,8 +16,8 @@
 static NgVisibility s_ng_visibility; /* RE-SoT: retail-only counting, shared native drivers. */
 static int s_ng_compat; /* RE-SoT: reference GPU shaders, not the CPU vertex interpreter. */
 static int s_ng_compact_pipelines; /* RE-SoT: Mali must not compile the large reference PSO just to wait for a compact one. */
-#if defined(__ANDROID__)
-/* RE-SoT: Android links the patched SDL directly; the query table is not
+#if defined(__ANDROID__) || defined(RESOT_PS5_GPU)
+/* RE-SoT: Android/PS5 link the patched SDL directly; the query table is not
  * looked up in a DLL that may be absent (port/third_party/sdl-gpu-query). */
 extern const ResotGpuQueryAPI *SDLCALL RESOT_GetVulkanQueryAPI(Uint32 version);
 extern void SDLCALL RESOT_SetVulkanPipelineCachePath(const char *path);
@@ -550,7 +550,7 @@ static void ng_shutdown(void)
         if (s_ng.window) SDL_ReleaseWindowFromGPUDevice(s_ng.device, s_ng.window);
         SDL_DestroyGPUDevice(s_ng.device);
     }
-#if !defined(__ANDROID__)
+#if !defined(__ANDROID__) && !defined(RESOT_PS5_GPU)
     if (s_ng.window) SDL_DestroyWindow(s_ng.window);   /* RE-SoT: Android: the host's */
 #endif
     free(s_ng.queued_vertices); free(s_ng.queued);
@@ -616,9 +616,19 @@ static int ng_init(const char *backend)
 #else
         s_ng_cache_path = RESOT_SetVulkanPipelineCachePath;
         s_ng_cache_save = RESOT_SaveVulkanPipelineCache;
+#if defined(RESOT_PS5_GPU)
+        /* RE-SoT (PS5): a title may neither chdir (EPERM) nor getcwd (it
+         * faulted on the console after "kern.proc.pathname is not approved");
+         * the host names its data folder instead. */
+        {
+            extern const char *resot_ps5_data_dir(void);
+            snprintf(cache, MAX_PATH, "%s", resot_ps5_data_dir());
+        }
+#else
         /* The host's working directory is the game's writable data folder.
          * Absolute: SDL on Android reads relative paths from the APK assets. */
         if (!getcwd(cache, MAX_PATH)) cache[0] = 0;
+#endif
         if (cache[0]) strcat(cache, "/vulkan-pipelines.bin");
 #endif
         if (s_ng_cache_path && s_ng_cache_save && cache[0]) s_ng_cache_path(cache);
@@ -876,6 +886,11 @@ static SDL_GPUTexture *ng_depth(NgSurface *s)
     depth->offset = s_gpu.zeta_offset; depth->w = w; depth->h = h;
     return s->depth;
 }
+#if defined(RESOT_PS5_GPU)
+/* RE-SoT: the PS5 host redraws the button glyphs of the retail font atlas in
+ * the decoded copy (port/ps5/src/buttons_ps5.c); other textures pass. */
+extern void resot_ps5_texture_decoded(uint32_t *px, uint32_t width, uint32_t height);
+#endif
 static SDL_GPUTexture *ng_texture(int stage, NgSurface *target)
 {
     const Texture *t = &s_gpu.texs[stage];
@@ -935,6 +950,9 @@ static SDL_GPUTexture *ng_texture(int stage, NgSurface *target)
     for (face = 0; face < layers; face++)
         hw_decode_texture(t, t->cube ? face*tex_face_stride(t) : 0,
             px + (size_t)face*t->width*t->height);
+#if defined(RESOT_PS5_GPU)
+    if (!t->cube) resot_ps5_texture_decoded(px, t->width, t->height); /* RE-SoT: PS5 button prompts. */
+#endif
     ng_upload_cycle(c->image, px, t->width, t->height, layers, levels > 1, reuse_image);
     if(s_ng.texture_probe && !t->cube && t->color<256 && s_ng.texture_probe_count<12 &&
        s_ng.texture_probe_formats[t->color]<2 && (uint64_t)t->width*t->height<=1024*1024) {

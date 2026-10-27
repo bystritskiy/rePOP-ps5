@@ -3381,10 +3381,14 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
          * counter counts -- see xbox_Nv2aFrameCounterFlip. */
         xbox_Nv2aFrameCounterFlip();
         if (hw_active()) {                        /* RE-SoT: host GPU presents */
+#if defined(_WIN32) || defined(__ANDROID__) || defined(RESOT_PS5_GPU) /* RE-SoT: PS5 Vulkan host. */
+            /* RE-SoT: renderer statistics require the hardware backend state;
+             * a core-only POSIX cross-build has no s_hw object. */
             extern void xbox_FramebufferWindowFrameStats(uint32_t);
             static uint64_t draws_at_flip;
             xbox_FramebufferWindowFrameStats((uint32_t)(s_hw.draws - draws_at_flip));
             draws_at_flip = s_hw.draws;
+#endif
             hw_flip();
             return;
         }

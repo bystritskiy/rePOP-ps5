@@ -218,6 +218,11 @@ LPVOID VirtualAlloc(LPVOID address, SIZE_T size, DWORD allocationType, DWORD pro
  * Fixed-address VirtualAlloc/MapViewOfFileEx inside it replace the reservation
  * (MAP_FIXED); releases inside it return to PROT_NONE instead of a hole. */
 void  w32_compat_own_range(void *base, SIZE_T size);
+#if defined(RESOT_PS5_DIRECT_MEMORY)
+/* RE-SoT: native memory lives in validated Win32 mapping handles. */
+HANDLE w32_direct_mapping_handle(void *, void (*)(void *));
+void *w32_direct_mapping_payload(HANDLE);
+#endif
 BOOL   VirtualFree(LPVOID address, SIZE_T size, DWORD freeType);
 BOOL   VirtualProtect(LPVOID address, SIZE_T size, DWORD newProtect, PDWORD oldProtect);
 
@@ -241,7 +246,12 @@ VOID  SecureZeroMemory(PVOID ptr, SIZE_T cnt);
 unsigned int _clearfp(void);   /* clear pending FPU exception flags */
 
 /* MSVC stack alloca alias. <alloca.h> provides the underlying function. */
+#if defined(RESOT_PS5)
+/* RE-SoT: FreeBSD declares alloca in stdlib.h; PayloadSDK has no alloca.h. */
+#include <stdlib.h>
+#else
 #include <alloca.h>
+#endif
 #define _alloca(n) alloca(n)
 
 /* ---- Win32 file API (POSIX-backed) ----------------------------------- */
@@ -477,7 +487,7 @@ VOID RaiseException(DWORD code, DWORD flags, DWORD nargs, const ULONG_PTR *args)
  * 
  * Note: GCC needs correct struct. This is from nxdk
  * */
-#ifdef __linux__
+#if defined(__linux__) || defined(RESOT_PS5) /* RE-SoT: PS5 logical fault frame. */
 typedef struct _EXCEPTION_POINTERS
 {
     PEXCEPTION_RECORD ExceptionRecord;

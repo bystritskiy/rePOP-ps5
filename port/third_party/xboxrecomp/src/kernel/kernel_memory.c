@@ -200,10 +200,53 @@ ULONG __stdcall xbox_MmQueryAddressProtect(PVOID VirtualAddress)
     return PAGE_NOACCESS;
 }
 
+/* RE-SoT: PS5 host pages are 16 KiB, and the title asks for 4 KiB. Its
+ * MmSetAddressProtect(0x808EB000, 0x1000, PAGE_READONLY) made 0x808E8000-
+ * 0x808EBFFF read-only, and DSOUND's next store to 0x808E8014 ended the
+ * process (observed). A change that takes access away applies only to the
+ * host pages the request covers whole; a page it shares with memory the
+ * title still writes stays as it was. A title that is right on the console
+ * never writes where it asked for read-only, so this loses no behaviour,
+ * only the fault a stray write would have raised. Changes that grant access
+ * still cover every page they touch. */
+#if defined(RESOT_PS5)
+#include <stdio.h>
+extern ptrdiff_t g_xbox_mem_offset;
+#endif
+BOOL xbox_ProtectGuestRange(PVOID base, SIZE_T size, DWORD protect, PDWORD old)
+{
+#if defined(RESOT_PS5)
+    const uintptr_t page = 0x4000;
+    DWORD access = protect & 0xFF;
+    if (access == PAGE_NOACCESS || access == PAGE_READONLY
+            || access == PAGE_EXECUTE || access == PAGE_EXECUTE_READ) {
+        uintptr_t start = ((uintptr_t)base + page - 1) & ~(page - 1);
+        uintptr_t end = ((uintptr_t)base + size) & ~(page - 1);
+        if (start != (uintptr_t)base || end != (uintptr_t)base + size) {
+            static int reported;
+            if (reported < 16) {
+                reported++;
+                fprintf(stderr, "  [MEM] guest protect 0x%08X+0x%zX -> 0x%X: %s\n",
+                        (uint32_t)((uintptr_t)base - (uintptr_t)g_xbox_mem_offset), (size_t)size,
+                        (unsigned)protect, end > start ? "only the whole 16 KiB pages" : "no whole 16 KiB page, not applied");
+                fflush(stderr);
+            }
+            if (end <= start) {
+                MEMORY_BASIC_INFORMATION mbi;
+                if (old) *old = VirtualQuery(base, &mbi, sizeof(mbi)) ? mbi.Protect : PAGE_READWRITE;
+                return TRUE;
+            }
+            return VirtualProtect((PVOID)start, end - start, protect, old);
+        }
+    }
+#endif
+    return VirtualProtect(base, size, protect, old);
+}
+
 VOID __stdcall xbox_MmSetAddressProtect(PVOID BaseAddress, ULONG NumberOfBytes, ULONG NewProtect)
 {
     DWORD old_protect;
-    VirtualProtect(BaseAddress, NumberOfBytes, xbox_protect_to_win32(NewProtect), &old_protect);
+    xbox_ProtectGuestRange(BaseAddress, NumberOfBytes, xbox_protect_to_win32(NewProtect), &old_protect);
     XBOX_TRACE(XBOX_LOG_MEM, "MmSetAddressProtect(%p, %u, 0x%X)", BaseAddress, NumberOfBytes, NewProtect);
 }
 

@@ -1,3 +1,9 @@
+> **rePOP-ps5** is a fork of [FulGerNet/rePOP](https://github.com/FulGerNet/rePOP)
+> (reSOT) that adds a native **PS5** host for the Xbox retail game. Everything
+> below this note is upstream's README, with the PS5 rows and section added;
+> the port itself is described in [`port/ps5/README.md`](port/ps5/README.md).
+> Upstream does not maintain or support the PS5 port; report its problems here.
+
 <p align="center">
   <img src="docs/media/reSOT_logo.png" alt="reSOT" width="256">
 </p>
@@ -161,6 +167,7 @@ every level, device or exact console accuracy.
 | In-level gameplay and rendering | 🟢 Played through multiple demo levels; remaining visual edge cases tracked | 🟢 Substantial gameplay reported; remaining scene-specific issues tracked |
 | Windows play | 🟢 Keyboard/mouse or controller; high frame rates reported | 🟢 Corrected timing; high frame rates reported |
 | Android play with native Vulkan | 🟢 Runs well in user-tested configurations | 🟢 Runs well in user-tested configurations; caching improvements confirmed |
+| PS5 native build (this fork) | 🟡 Compiles and links; not run on a console | 🟡 On the console: title screen, menu, profile, a cutscene and first gameplay frames seen; sound, input in play, frame rate and saves not checked |
 | Adreno 640 / MediaTek/Samsung compatibility | 🟢 User confirms operation restored on the tested MediaTek/Samsung device after SDL mip correction | 🟢 User confirms Poco colored-pixel corruption resolved; broader GPU coverage remains open |
 | Graphics presets | 🟡 Reduced/Standard/Full menu and policy tests pass; new preset gameplay checks pending | 🟡 Same shared policy and verification limits |
 | Android diagnostic sharing | 🟡 On-demand ZIP implemented; Samsung archive received; cancellation/cleanup timing needs device checks | 🟡 Same shared exporter |
@@ -261,6 +268,18 @@ Windows outputs are `bin/sot-xbox-demo.exe` and `bin/sot-xbox-retail.exe`;
 Android outputs `bin/reSOT-android.apk`. Outputs and game data stay local
 and ignored. Use `tools/shortcut.ps1` for a Windows desktop shortcut.
 
+## PS5 port (this fork, experimental)
+
+The PS5 port follows upstream **v0.3.4** (`reSOTv0.3.4`, `04cacf33`). The
+retail game links with SDL3 GPU, Vulkan/RADV, a direct-memory Xbox arena and
+native pad and audio, and is signed as a development FSELF. On a console
+(FW 13.40, kstuff-lite 1.11, ShadowMountPlus 1.7-beta5fix1, 2026-10-27),
+installed as a folder, it reached the title screen, the menu, a cutscene and
+the first gameplay frames; button prompts show PlayStation buttons. Sound,
+input in play, frame rate and saves are not checked yet. The app carries no
+game: it reads the files of your own disc from the console's storage. See
+[`port/ps5/README.md`](port/ps5/README.md).
+
 ## How it works
 
 ```text
@@ -325,4 +344,6 @@ the user's checked Xbox image and are for the owner of the original game.
 See [LICENSE](LICENSE) and [LICENSING.md](docs/LICENSING.md).
 
 *Prince of Persia* is a trademark of Ubisoft. This project is not affiliated
-with or endorsed by Ubisoft or Microsoft.
+with or endorsed by Ubisoft or Microsoft. PlayStation, PS5 and DualSense are
+trademarks of Sony Interactive Entertainment; the PS5 port is not affiliated
+with or endorsed by Sony.

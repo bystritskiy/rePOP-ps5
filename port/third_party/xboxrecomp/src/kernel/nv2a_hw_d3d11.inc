@@ -37,7 +37,7 @@
  * texture modes, point/line primitives, guest-visible framebuffer contents
  * (nothing is copied back to guest memory).
  */
-#if defined(_WIN32) || defined(__ANDROID__)
+#if defined(_WIN32) || defined(__ANDROID__) || defined(RESOT_PS5_GPU) /* RE-SoT: PS5 Vulkan host. */
 
 /* RE-SoT: Windows builds both encoders (Direct3D 11 and the native SDL GPU
  * one in nv2a_hw_native.inc). Android builds only the native encoder, on
@@ -1259,6 +1259,11 @@ static int hw_active(void)
     }
     return s_hw.ok;
 }
+
+#if defined(RESOT_PS5_GPU)
+/* RE-SoT: PS5 startup refuses a software-only renderer before starting XBE. */
+int resot_ps5_prepare_gpu(void) { return hw_active() && ng_active(); }
+#endif
 
 static uint32_t hw_zmax_bits(void)
 {

@@ -519,7 +519,7 @@ static void ac97_arm_write_trap(void)
     if (!g_mcpx_memory || g_ac97_page)
         return;
     g_ac97_page = (char *)g_mcpx_memory + AC97_NABM_OFFSET;
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(RESOT_PS5) /* RE-SoT: PS5 dispatches POSIX faults. */
     /* RE-SoT: no vectored handlers or trap flag on Android. The host's
      * SIGSEGV handler calls xbox_Ac97HandleFault, which performs the write
      * itself (below). */
@@ -554,7 +554,8 @@ static void ac97_arm_write_trap(void)
             XBOX_MCPX_BASE + AC97_NABM_OFFSET);
 }
 
-#if defined(__ANDROID__) && defined(__aarch64__)
+#if (defined(__ANDROID__) && defined(__aarch64__)) || defined(RESOT_PS5)
+/* RE-SoT: PS5 supplies a logical x86-64 context to the same MMIO interface. */
 /* RE-SoT: the Android half of the trap. The faulting store is decoded
  * (platform/mmio_decode.h) and performed with the page briefly writable,
  * then RR is masked as the single-step path does. The protection covers a
@@ -564,8 +565,13 @@ static void ac97_arm_write_trap(void)
 
 static size_t ac97_trap_span(void)
 {
+#if defined(RESOT_PS5)
+    /* RE-SoT: the PS5 maps 16 KB pages, including the whole bus-master trap. */
+    return 0x4000;
+#else
     long page = sysconf(_SC_PAGESIZE);
     return page > (long)AC97_TRAP_BYTES ? (size_t)page : AC97_TRAP_BYTES;
+#endif
 }
 
 static uint64_t ac97_a64_read(void *dev, uint32_t off, int size)
@@ -2286,7 +2292,7 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
          * this on Windows needs placeholder reservations (VirtualAlloc2). */
 #ifndef _WIN32
         g_span_size = g_memory_size * (size_t)(1 + XBOX_NUM_MIRRORS);
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(RESOT_PS5) /* RE-SoT: own PS5 apertures too. */
         /* RE-SoT: reserve the whole 4 GB guest space. The contiguous window,
          * NV2A, MCPX and flash apertures are fixed offsets from the base, and
          * an Android process has ART and its libraries wherever the kernel
@@ -2294,7 +2300,7 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
         g_span_size = (size_t)0x100000000ull;
 #endif
         g_span_base = VirtualAlloc(NULL, g_span_size, MEM_RESERVE, PAGE_NOACCESS);
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(RESOT_PS5) /* RE-SoT: safe fixed PS5 views. */
         if (g_span_base)
             w32_compat_own_range(g_span_base, g_span_size);
 #endif
@@ -2304,10 +2310,23 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
                                             FILE_MAP_ALL_ACCESS, 0, 0,
                                             g_memory_size, g_span_base);
             if (!g_memory_base) {
+#if defined(RESOT_PS5)
+                /* RE-SoT: release the reservation itself on a failed view. */
+                w32_compat_own_range(NULL, 0);
+#endif
                 VirtualFree(g_span_base, g_span_size, MEM_RELEASE);
                 g_span_base = NULL;
                 g_span_size = 0;
             }
+        }
+#endif
+
+#if defined(RESOT_PS5)
+        /* RE-SoT: PS5 must own every guest aperture before any MAP_FIXED.
+         * Do not fall back to placing 4 GB of device windows around a hint. */
+        if (!g_memory_base) {
+            CloseHandle(g_mapping_handle); g_mapping_handle = NULL;
+            return FALSE;
         }
 #endif
 
@@ -3288,6 +3307,10 @@ void xbox_MemoryLayoutShutdown(void)
     /* Whatever is left of the base+mirrors reservation. The views carved out
      * of it are already unmapped above; this releases the range itself. */
     if (g_span_base) {
+#if defined(RESOT_PS5)
+        /* RE-SoT: free the enclosing PS5 reservation, not another PROT_NONE view. */
+        w32_compat_own_range(NULL, 0);
+#endif
         VirtualFree(g_span_base, g_span_size, MEM_RELEASE);
         g_span_base = NULL;
         g_span_size = 0;

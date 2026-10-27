@@ -116,3 +116,13 @@ publishing it or an executable that embeds it.
 
 Jade Toolkit and the other Prince of Persia tools that may sit next to this
 repository are comparison references only; none of their code is used.
+
+**PS5 (`port/ps5`).** The PS5 build also links PS5 Platform and follows
+PS5_Vulkan's native link/runtime recipe (GPL-3.0-or-later), with statically
+linked RADV/Mesa and the existing shader compiler. The combined PS5 executable
+is subject to those additional terms. Exact revisions, source locations and
+alterations are in `port/ps5/dependencies.json` and `port/ps5/NOTICE.md`;
+licences and notices accompany the local package. Game assets remain separate
+user-owned local inputs, not covered by these source licences. The clean-room
+libc.prx is rebuilt twice and checked against the pinned expected digest;
+Sony system modules and host link-stub implementations are not packaged.

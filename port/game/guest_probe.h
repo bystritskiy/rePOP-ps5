@@ -9,7 +9,7 @@
 #include <string.h>
 #if defined(_WIN32)
 #include <windows.h>
-#elif defined(__ANDROID__)
+#elif defined(__ANDROID__) || defined(RESOT_PS5)
 #include "kernel.h"
 #include "xbox_memory_layout.h"
 #include "guest_vmem.h"
@@ -31,9 +31,9 @@ static int resot_guest_read_word(ptrdiff_t offset, uint64_t va, uint32_t *value)
         memcpy(value,(const void *)address,sizeof *value);
         return 1;
     }
-#elif defined(__ANDROID__)
+#elif defined(__ANDROID__) || defined(RESOT_PS5)
     {
-        /* Android owns these RAM mappings for the process lifetime. Extended
+        /* Android and PS5 own these RAM mappings for the process lifetime. Extended
          * heap pages require the guest page table: the host reserves 4 GB,
          * so VirtualQuery's mapping registry cannot prove readability. */
         uint32_t info[7], a = (uint32_t)va;

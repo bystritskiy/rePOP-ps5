@@ -725,7 +725,7 @@ static void bridge_NtClose(void)
     if (raw_handle && raw_handle != 0xDEAD0001u && raw_handle != 0xBEEF0010u) {
         HANDLE h = bridge_take_handle(raw_handle);
         if (h && h != INVALID_HANDLE_VALUE) {
-#if defined(_WIN32) || (defined(__ANDROID__) && RESOT_RUNTIME_RETAIL)
+#if defined(_WIN32) || ((defined(__ANDROID__) || defined(RESOT_PS5)) && RESOT_RUNTIME_RETAIL)
             /* RE-SoT: free POSIX profile searches before malloc can reuse h. */
             xbox_dir_context_drop(h);
 #endif
@@ -1624,10 +1624,51 @@ void xbox_GuestSetEvent(uint32_t guest_va)
         BRIDGE_MEM32(guest_va + 4) = 1;   /* not waited on yet: the wait reads it */
 }
 
+static void bridge_KeWaitForSingleObject_body(void);
+#if defined(RESOT_PS5)
+#include <time.h>
+/* RE-SoT: on the PS5 the title called this 10 million times in 13 s with no
+ * GPU work after the menu data loaded (observed). One call in 2^20 is logged
+ * with its object, timeout, result, real duration and guest caller, to tell
+ * a title poll from a wait that returns at once. */
+static void ke_wait_sample(uint32_t object, int type, uint32_t timeout_ptr, uint32_t result, int64_t us)
+{
+    long long timeout = timeout_ptr ? *(const long long *)XBOX_TO_NATIVE(timeout_ptr) : -1;
+    extern uint32_t xbox_Nv2aNotifyEventVa(void);
+    fprintf(stderr, "  [WAIT] KeWaitForSingleObject object=0x%08X%s type=%d timeout=%lld%s -> 0x%X "
+            "after %lld us, caller 0x%08X\n", object,
+            object == xbox_Nv2aNotifyEventVa() ? " (NV2A notify event)" : "", type, timeout,
+            timeout_ptr ? "" : " (none)", result, (long long)us, g_xbox_kernel_caller);
+    fflush(stderr);
+}
+static int64_t ke_wait_now_us(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (int64_t)t.tv_sec * 1000000 + t.tv_nsec / 1000;
+}
+#endif
+
 /* ── KeWaitForSingleObject (ordinal 159) ─────────────────── */
 extern uint32_t xbox_Nv2aNotifyEventVa(void);
 extern int xbox_Nv2aCaughtUp(void);
 static void bridge_KeWaitForSingleObject(void)
+{
+#if defined(RESOT_PS5)
+    static uint32_t calls;
+    if ((__atomic_fetch_add(&calls, 1, __ATOMIC_RELAXED) & 0xFFFFF) == 0) {
+        int64_t start = ke_wait_now_us();
+        int type = -1;
+        uint32_t object = STACK_ARG(0), timeout_ptr = STACK_ARG(4);
+        ke_guest_event(object, &type);
+        bridge_KeWaitForSingleObject_body();
+        ke_wait_sample(object, type, timeout_ptr, g_eax, ke_wait_now_us() - start);
+        return;
+    }
+#endif
+    bridge_KeWaitForSingleObject_body();
+}
+static void bridge_KeWaitForSingleObject_body(void)
 {
     uint32_t object = STACK_ARG(0);
     uint32_t wait_reason = STACK_ARG(1);
@@ -7907,7 +7948,8 @@ static void bridge_NtProtectVirtualMemory(void)
     uint32_t size    = size_ptr ? BRIDGE_MEM32(size_ptr) : 0;
     DWORD old = 0;
 
-    if (VirtualProtect(XBOX_TO_NATIVE(base_va), size, (DWORD)new_prot, &old)) {
+    /* RE-SoT: through xbox_ProtectGuestRange, for the PS5's 16 KiB host pages. */
+    if (xbox_ProtectGuestRange(XBOX_TO_NATIVE(base_va), size, (DWORD)new_prot, &old)) {
         if (old_ptr)
             BRIDGE_MEM32(old_ptr) = (uint32_t)old;
         g_eax = 0;  /* STATUS_SUCCESS */
@@ -9825,6 +9867,24 @@ static void kernel_thunk_dispatch_body(void)
         if (now - last_summary_tick >= 2000 && g_kernel_call_count > 200) {
             fprintf(stderr, "  [KERNEL] summary: %lld total calls, latest ordinal %u (slot %d) esp=0x%08X\n",
                     g_kernel_call_count, ordinal, slot, g_esp);
+#if defined(RESOT_PS5)
+            /* RE-SoT: after the intro movie the PS5 run sat in Enter/Leave-
+             * CriticalSection on the main thread with no GPU work (observed).
+             * The words on the guest stack that point into the XBE's code
+             * (.text through XPP) are its call chain, newest first. */
+            if (g_esp) {
+                int words, found = 0;
+                fprintf(stderr, "  [KERNEL]   guest stack code:");
+                for (words = 0; words < 256 && found < 16; words++) {
+                    uint32_t v = BRIDGE_MEM32(g_esp + words * 4u);
+                    if (v >= 0x00011000u && v < 0x00418000u) {
+                        fprintf(stderr, " %08X", v);
+                        found++;
+                    }
+                }
+                fputc('\n', stderr);
+            }
+#endif
             /* And which ones, ranked. "Latest" names whatever the sample
              * happened to land on; the question behind this line is what a
              * title sitting still is actually asking the kernel for, and

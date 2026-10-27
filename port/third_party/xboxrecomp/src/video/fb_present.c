@@ -21,7 +21,7 @@
  * same code; the window, its messages and GDI are Windows-only, and the
  * Android host (port/android/src) supplies the SDL window, the keys and the
  * panel's text. */
-#if defined(_WIN32) || defined(__ANDROID__)
+#if defined(_WIN32) || defined(__ANDROID__) || defined(RESOT_PS5_GPU) /* RE-SoT: PS5 Vulkan host. */
 #if defined(_WIN32)
 #include <windows.h>
 #else
@@ -1162,7 +1162,9 @@ static DWORD WINAPI fb_thread(LPVOID unused)
 /* RE-SoT (Android): the host made the SDL window and pumps its events on
  * its own thread; this one does what fb_thread does besides the window:
  * latch the movie overlay and repaint while the title is not flipping. */
-void xbox_FramebufferAndroidSetWindow(void *sdl_window) { s_hwnd = (HWND)sdl_window; }
+/* RE-SoT: common non-Windows host entry; retain Android ABI. */
+void xbox_FramebufferHostSetWindow(void *sdl_window) { s_hwnd = (HWND)sdl_window; }
+void xbox_FramebufferAndroidSetWindow(void *sdl_window) { xbox_FramebufferHostSetWindow(sdl_window); }
 
 /* Keys and buttons from the host (gamepad, touch, a hardware keyboard), as
  * the window procedure records them on Windows. */

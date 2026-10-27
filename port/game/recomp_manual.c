@@ -20,6 +20,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <stddef.h> /* ptrdiff_t must not depend on the host's stdio headers. */
 
 /* ── ICALL trace ring buffer ───────────────────────────────── */
 

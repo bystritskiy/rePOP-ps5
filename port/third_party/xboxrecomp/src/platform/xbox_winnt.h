@@ -156,7 +156,14 @@ typedef void              *HWND, *HDC, *HBITMAP, *HICON, *HMENU, *HCURSOR;
 /* PCONTEXT: Windows VEH register state. On Linux the equivalent is
  * ucontext_t*; we leave it opaque here since Linux callers don't use it. */
  
-#ifdef __linux__
+#if defined(RESOT_PS5)
+/* RE-SoT: logical x86-64 fault registers, copied to/from FreeBSD ucontext by
+ * the PS5 host. This is deliberately not a Windows CONTEXT ABI declaration. */
+typedef struct ResotPS5Context {
+    uint64_t Rax, Rcx, Rdx, Rbx, Rsp, Rbp, Rsi, Rdi;
+    uint64_t R8, R9, R10, R11, R12, R13, R14, R15, Rip, EFlags;
+} RESOT_PS5_CONTEXT, *PCONTEXT;
+#elif defined(__linux__)
 /* On gcc these data structures are necessary  even if anyone is going to be used*/
 typedef union Register{
 	uint32_t X; // all register

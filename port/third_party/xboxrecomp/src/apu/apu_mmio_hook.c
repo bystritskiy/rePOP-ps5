@@ -285,7 +285,8 @@ bool apu_hook_handle_mmio(PCONTEXT ctx, uintptr_t fault_addr,
 
 #endif /* _WIN32 */
 
-#if defined(__ANDROID__) && defined(__aarch64__)
+#if (defined(__ANDROID__) && defined(__aarch64__)) || defined(RESOT_PS5)
+/* RE-SoT: PS5 uses the shared x64 decoder and logical signal registers. */
 /* RE-SoT: Android. ctx is the SIGSEGV ucontext; the AArch64 decoder in
  * platform/mmio_decode.h services the access against the same APU model. */
 #include "../platform/mmio_decode.h"
@@ -312,9 +313,14 @@ bool apu_hook_handle_mmio(void *ctx, uintptr_t fault_addr,
     if (!g_apu_state) return false;
     ok = mmio_emulate(ctx, off, g_apu_state, apu_a64_read, apu_a64_write) != 0;
     if (!ok && fails++ < 20) {
+#if defined(RESOT_PS5)
+        fprintf(stderr, "[APU] MMIO decode fail at offset=0x%X rip=%llx\n",
+                off, (unsigned long long)((PCONTEXT)ctx)->Rip);
+#else
         uint32_t insn;
         memcpy(&insn, (const void *)(uintptr_t)((ucontext_t *)ctx)->uc_mcontext.pc, 4);
         fprintf(stderr, "[APU] MMIO decode fail at offset=0x%X: insn %08X\n", off, insn);
+#endif
         fflush(stderr);
     }
     return ok;

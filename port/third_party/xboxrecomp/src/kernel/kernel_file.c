@@ -765,7 +765,7 @@ static int posix_object_path(PXBOX_OBJECT_ATTRIBUTES oa, char *out, size_t size)
 {
     const char *path=get_xbox_path(oa);
     if (!path) return 0;
-#if defined(__ANDROID__) && RESOT_RUNTIME_RETAIL
+#if (defined(__ANDROID__) || defined(RESOT_PS5)) && RESOT_RUNTIME_RETAIL
     if (oa->RootDirectory && path[0]!='\\' && path[0]!='/' && !strchr(path,':')) {
         const char *parent=w32_handle_path(oa->RootDirectory);
         if (!parent || snprintf(out,size,"%s/%s",parent,path)>=(int)size) return 0;
@@ -776,7 +776,7 @@ static int posix_object_path(PXBOX_OBJECT_ATTRIBUTES oa, char *out, size_t size)
     return xbox_translate_path(path,out,(int)size);
 }
 
-#if defined(__ANDROID__) && RESOT_RUNTIME_RETAIL
+#if (defined(__ANDROID__) || defined(RESOT_PS5)) && RESOT_RUNTIME_RETAIL
 /* RE-SoT: retain bounded evidence of profile I/O in device release logs.
  * Missing-file probes alone cannot distinguish creation from a saved header
  * appended at EOF; offsets and resulting sizes make the next run reviewable. */
@@ -821,7 +821,7 @@ static int posix_open_flags(ACCESS_MASK access, ULONG disposition)
     /* O_TRUNC / O_CREAT imply write intent */
     if ((extra & (O_TRUNC | O_CREAT)) && rw == O_RDONLY)
         rw = O_RDWR;
-#if defined(__ANDROID__) && RESOT_RUNTIME_RETAIL
+#if (defined(__ANDROID__) || defined(RESOT_PS5)) && RESOT_RUNTIME_RETAIL
     /* RE-SoT: full file access includes APPEND_DATA, but also WRITE_DATA.
      * O_APPEND would ignore the save writer's seeks and append its header
      * instead of updating it, leaving profiles unreadable on the next boot. */
@@ -900,7 +900,7 @@ NTSTATUS __stdcall xbox_NtCreateFile(
 
     int fd;
     if (CreateOptions & XBOX_FILE_DIRECTORY_FILE) {
-#if defined(__ANDROID__) && RESOT_RUNTIME_RETAIL
+#if (defined(__ANDROID__) || defined(RESOT_PS5)) && RESOT_RUNTIME_RETAIL
         /* RE-SoT: retail's free-space probe at XBE 0x00337414 (open
          * returns to 0x0033744A) opens Partition1 as a directory. The raw
          * device maps to Partition1.img, so O_DIRECTORY on it is ENOTDIR.
@@ -932,7 +932,7 @@ NTSTATUS __stdcall xbox_NtCreateFile(
     if (fd < 0) {
         int e = errno;
         g_xbox_last_file_error = errno_to_win32(e);
-#if defined(__ANDROID__)
+#if (defined(__ANDROID__) || defined(RESOT_PS5))
         /* RE-SoT: release-build diagnostics must retain the POSIX cause and
          * the path, on both targets. A missing file is usually a probe the
          * title falls back from: log the first ones, every other cause always. */
@@ -979,7 +979,7 @@ NTSTATUS __stdcall xbox_NtReadFile(
         lseek(fd, (off_t)ByteOffset->QuadPart, SEEK_SET);
 
     ssize_t n = read(fd, Buffer, Length);
-#if defined(__ANDROID__) && RESOT_RUNTIME_RETAIL
+#if (defined(__ANDROID__) || defined(RESOT_PS5)) && RESOT_RUNTIME_RETAIL
     /* RE-SoT: see the bounded save diagnostics above. */
     resot_trace_save_io(FileHandle, "READ", ByteOffset, Length, n);
 #endif
@@ -1017,7 +1017,7 @@ NTSTATUS __stdcall xbox_NtWriteFile(
 
     /* RE-SoT: retail save writes must honor their explicit offset, including
      * EOF (-1); report failed seeks instead of writing at an unrelated offset. */
-#if defined(__ANDROID__) && RESOT_RUNTIME_RETAIL
+#if (defined(__ANDROID__) || defined(RESOT_PS5)) && RESOT_RUNTIME_RETAIL
     if (ByteOffset && (ByteOffset->QuadPart>=0 || ByteOffset->QuadPart==-1) &&
         lseek(fd, ByteOffset->QuadPart==-1 ? 0 : (off_t)ByteOffset->QuadPart,
               ByteOffset->QuadPart==-1 ? SEEK_END : SEEK_SET)<0) {
@@ -1032,7 +1032,7 @@ NTSTATUS __stdcall xbox_NtWriteFile(
         lseek(fd, (off_t)ByteOffset->QuadPart, SEEK_SET);
     ssize_t n = write(fd, Buffer, Length);
 #endif
-#if defined(__ANDROID__) && RESOT_RUNTIME_RETAIL
+#if (defined(__ANDROID__) || defined(RESOT_PS5)) && RESOT_RUNTIME_RETAIL
     /* RE-SoT: see the bounded save diagnostics above. */
     resot_trace_save_io(FileHandle, "WRITE", ByteOffset, Length, n);
 #endif
@@ -1053,7 +1053,7 @@ NTSTATUS __stdcall xbox_NtClose(HANDLE Handle)
 {
     XBOX_TRACE(XBOX_LOG_FILE, "NtClose(handle=%p)", Handle);
     if (Handle && Handle != INVALID_HANDLE_VALUE) {
-#if defined(__ANDROID__) && RESOT_RUNTIME_RETAIL
+#if (defined(__ANDROID__) || defined(RESOT_PS5)) && RESOT_RUNTIME_RETAIL
         /* RE-SoT: same lifetime rule as the guest NtClose bridge below. */
         xbox_dir_context_drop(Handle);
 #endif
@@ -1242,7 +1242,7 @@ NTSTATUS __stdcall xbox_NtFlushBuffersFile(HANDLE FileHandle, PXBOX_IO_STATUS_BL
 {
     int fd = w32_handle_fd(FileHandle);
     /* RE-SoT: never claim a failed save flush was durable on Android. */
-#if defined(__ANDROID__) && RESOT_RUNTIME_RETAIL
+#if (defined(__ANDROID__) || defined(RESOT_PS5)) && RESOT_RUNTIME_RETAIL
     int result;
     do { result=fd<0 ? -1 : fsync(fd); } while(fd>=0 && result<0 && errno==EINTR);
     NTSTATUS status=fd<0 ? STATUS_INVALID_HANDLE : result<0 ? errno_to_status(errno) : STATUS_SUCCESS;
@@ -1295,7 +1295,7 @@ static DIR_CONTEXT s_dir_contexts[MAX_DIR_CONTEXTS];
 static CRITICAL_SECTION s_dir_cs;
 static BOOL s_dir_cs_init = FALSE;
 
-#if defined(__ANDROID__) && RESOT_RUNTIME_RETAIL
+#if (defined(__ANDROID__) || defined(RESOT_PS5)) && RESOT_RUNTIME_RETAIL
 /* RE-SoT: XAPI FindFirstFile closes after one exact-name result. Unlike the
  * Windows backend, POSIX kept that search alive until EOF. Reused malloc
  * handle addresses then inherited another filename's cursor and size;

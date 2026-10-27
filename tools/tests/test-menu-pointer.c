@@ -4,7 +4,22 @@
 #include <stdint.h>
 #include <string.h>
 #include "../../port/game/resot_menu_pointer.c"
+
+/* RE-SoT: the PS5 port runs these checks on macOS as well. */
+static void set_aspect(const char *value)
+{
+#if defined(_WIN32)
+    _putenv_s("RECOMP_HW_ASPECT",value);
+#else
+    setenv("RECOMP_HW_ASPECT",value,1);
+#endif
+}
 ptrdiff_t g_xbox_mem_offset;
+#if defined(RESOT_PS5)
+/* Synthetic RAM has the same bounded-read policy as the native PS5 host. */
+size_t g_xbox_total_ram=8*1024*1024, g_xbox_map_size;
+int guest_vmem_query(uint32_t address,uint32_t *info) { (void)address; (void)info; return 0; }
+#endif
 #define CHECK(x) do { if(!(x)) { fprintf(stderr,"line %d: %s\n",__LINE__,#x); exit(1); } } while(0)
 static uint8_t *memory;
 static void put(uint32_t a,uint32_t n) { memcpy(memory+a,&n,4); }
@@ -18,7 +33,7 @@ int main(void)
     int i;
     memory=calloc(1,8*1024*1024); CHECK(memory);
     g_xbox_mem_offset=(ptrdiff_t)memory;
-    _putenv_s("RECOMP_HW_ASPECT","4:3");
+    set_aspect("4:3");
     resot_menu_pointer_viewport(4.0f/3);
     put(MENU_MANAGER,mgr); put(mgr+0xF0,1); put(mgr+0x70,page);
     put(page+PAGE_STATE,2); put(page+PAGE_CHILDREN,children); put(page+PAGE_CHILDREN+4,children+8);
@@ -88,10 +103,10 @@ int main(void)
     CHECK(pad[4]==4 && !pad[6]); poll(pad); CHECK(!pad[4]);
     tap(.875f,.5f); poll(pad); CHECK(pad[4]==8 && !pad[6]); poll(pad);
     /* The same arrows at their actual ultrawide screen positions. */
-    _putenv_s("RECOMP_HW_ASPECT","2712:1220"); resot_menu_pointer_viewport(2712.0f/1220);
+    set_aspect("2712:1220"); resot_menu_pointer_viewport(2712.0f/1220);
     float widen=(2712.0f/1220)/(4.0f/3);
     tap(.5f+(.125f-.5f)/widen,.5f); poll(pad); CHECK(pad[4]==4); poll(pad);
-    _putenv_s("RECOMP_HW_ASPECT","4:3"); resot_menu_pointer_viewport(4.0f/3);
+    set_aspect("4:3"); resot_menu_pointer_viewport(4.0f/3);
     real(0x18100+0x20,.4f); // unrelated four-label group must not get arrows
     tap(.875f,.5f); poll(pad); CHECK(!pad[4] && !pad[6]);
 #else
