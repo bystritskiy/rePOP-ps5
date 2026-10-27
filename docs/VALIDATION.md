@@ -90,6 +90,14 @@ show Cross and Circle in the menus and gameplay prompts and the L1 and R1
 badges in the camera prompt. With 1440p (3x) and the Full preset set in reSOT
 Options, 17 of the first 19 renderer reports were 58-60 fps.
 
+01.003.005 defaults: with `resot-options.ini` moved aside on the console
+(a new install's state) the build from `e8f2ba3` logged `FPS limit: 0`,
+`host VSync on` and `[HW native] Internal resolution: 300% (1440p for
+480-line guest)`, then `[BUTTONS] PlayStation glyphs drawn into the button
+atlas`; renderer reports 0.3 and 27.6 fps while starting, then 59.9 three
+times. The preset is not logged without an INI; Full comes from the code's
+default (unchanged).
+
 `ps5-native-tool` built from the pinned PS5_Vulkan `tooling/native` sources
 (command in `port/ps5/README.md`) signs the linked retail ELF to the same
 bytes as the tool binary used for the runs above.
