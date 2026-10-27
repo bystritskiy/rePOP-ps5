@@ -126,3 +126,8 @@ licences and notices accompany the local package. Game assets remain separate
 user-owned local inputs, not covered by these source licences. The clean-room
 libc.prx is rebuilt twice and checked against the pinned expected digest;
 Sony system modules and host link-stub implementations are not packaged.
+
+`docs/media/recompstore-badge-*.svg` are the "Get it on RecompStore" badges
+from the RecompStore press kit (https://recompstore.com/press), used unchanged
+to link the app's store page. They belong to RecompStore and are not covered
+by the repository licence.
