@@ -26,12 +26,12 @@ executable. It runs the files of your own Xbox retail disc.
   <img src="docs/media/ps5-graphics.jpg" alt="reSOT Options, Graphics: internal resolution 1440p" width="49%">
 </p>
 
-<p align="center"><sub>Screenshots taken on a PS5 with the US disc's files,
-internal resolution set to 1440p (3x) in reSOT Options.</sub></p>
+<p align="center"><sub>Screenshots taken on a PS5 with the US disc's files
+at 1440p (3x) internal resolution.</sub></p>
 
 ## Status
 
-Version **01.003.004**, based on upstream reSOT v0.3.4. Tested on one
+Version **01.003.005**, based on upstream reSOT v0.3.4. Tested on one
 console: FW 13.40, kstuff-lite 1.11, ShadowMountPlus 1.7-beta5fix1.
 
 Seen on the console:
@@ -44,8 +44,9 @@ Seen on the console:
 - PlayStation buttons in the game's prompts (Cross, Circle, L1 and R1 seen
   so far).
 
-A new install starts at 1x internal resolution; 1440p, the graphics preset,
-the frame limit and VSync are set in the game's reSOT Options, Graphics.
+A new install starts at 1440p with the Full preset and VSync on; the internal
+resolution, the graphics preset, the frame limit and VSync can be changed in
+the game's reSOT Options, Graphics.
 
 Not checked yet: sound, controller input through a whole level, rumble,
 saves, later levels, the screen shown when no game is found, game files on

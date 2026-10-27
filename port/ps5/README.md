@@ -9,7 +9,7 @@ packaging and install tools.
 **Status (2026-10-27).** Based on upstream
 [FulGerNet/rePOP v0.3.4](https://github.com/FulGerNet/rePOP/releases/tag/reSOTv0.3.4)
 (`reSOTv0.3.4`, `04cacf3310fc612a70dded28f004a046463d4eb4`); PS5 content
-version `01.003.004`. Retail and demo compile and link with SDL3 GPU, Vulkan
+version `01.003.005`. Retail and demo compile and link with SDL3 GPU, Vulkan
 and RADV. On a console the retail build, installed as a folder, reached the
 title screen, the main menu, the profile name keyboard, the palace balcony
 cutscene and the first gameplay frames, with correct lighting, fog and
@@ -176,8 +176,10 @@ controller drawing on the controls screen are still the originals.
 - Sound: native AudioOut, S16 stereo 48 kHz, with a bounded queue held near
   8 frames by resampling by at most 0.8%, like the Windows and Android hosts.
 - SDL3 3.4.18 with a VideoOut WSI over `VK_KHR_display` and a static Vulkan
-  ICD; upstream's SDL GPU-query patch is kept. Output is 1920x1080, 16:9,
-  VSync on.
+  ICD; upstream's SDL GPU-query patch is kept. Output is 1920x1080, 16:9.
+  A new install renders at 1440p (3x) internal resolution with the Full
+  preset and VSync on (`options_android.c` under `RESOT_PS5`); the INI and
+  reSOT Options, Graphics, override them.
 - RADV from PS5_Mesa (`radv-winsys=ps5`), linked with PS5_Vulkan's recipe and
   its clean-room `libc.prx` (rebuilt and checked against the pinned digest).
 - Boot checks the XBE's SHA-256 before mapping it and requires a Vulkan

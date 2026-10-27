@@ -53,6 +53,16 @@ static const char *const s_cap_names[] = {"30", "60", "120", "None"};
 static const int s_render_scales[] = {50,75,100,150,225,300};
 static const char *const s_render_names[] = {"240p (0.5x)","360p (0.75x)","480p (1x)","720p (1.5x)","1080p (2.25x)","1440p (3x)"};
 static int s_resolution = 2; /* Android default: guest-sized main targets. */
+#if defined(RESOT_PS5)
+/* RE-SoT (PS5): one console, measured at about 60 fps with 1440p (3x) and
+ * VSync on (docs/VALIDATION.md, 2026-10-27), so a new install starts there.
+ * The INI and the Graphics page still override both. */
+#define RESOT_DEFAULT_RENDER_PERCENT 300
+#define RESOT_DEFAULT_VSYNC 1
+#else
+#define RESOT_DEFAULT_RENDER_PERCENT 100
+#define RESOT_DEFAULT_VSYNC (env && *env != '0')
+#endif
 
 static SRWLOCK s_lock = SRWLOCK_INIT;
 static volatile LONG s_revision;
@@ -382,7 +392,7 @@ void resot_options_init(void)
     s_fps = ini_get("Graphics", "FPSLimit", 0);
     if (s_fps != 0 && s_fps != 30 && s_fps != 60 && s_fps != 120) s_fps = 0;
     env = getenv("RECOMP_HW_VSYNC");
-    s_vsync = ini_get("Graphics", "VSync", env && *env != '0') != 0;
+    s_vsync = ini_get("Graphics", "VSync", RESOT_DEFAULT_VSYNC) != 0;
     s_post_quality=ini_get("Graphics","GraphicsPreset",-1);
     if(s_post_quality==-1) {
         int old=ini_get("Graphics","PostProcessingQuality",3);
@@ -393,7 +403,7 @@ void resot_options_init(void)
     s_texture_glow=s_post_quality==3;
     xbox_SetPostProcessingQuality(s_post_quality);
     {
-        int percent=ini_get("Graphics","InternalResolutionPercent",100);
+        int percent=ini_get("Graphics","InternalResolutionPercent",RESOT_DEFAULT_RENDER_PERCENT);
         s_resolution=2;
         for (int r=0;r<6;r++) if (s_render_scales[r]==percent) s_resolution=r;
         xbox_SetRenderScalePercent(s_render_scales[s_resolution]);
