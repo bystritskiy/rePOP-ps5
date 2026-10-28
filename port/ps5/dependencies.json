@@ -1,5 +1,5 @@
 {
-  "upstream": "04cacf3310fc612a70dded28f004a046463d4eb4",
+  "upstream": "828ebf32c6abea108f4d23c174191be4faa6ae2c",
   "sources": {
     "sdl3": [
       "https://github.com/libsdl-org/SDL.git",
@@ -43,6 +43,6 @@
     "architecture": "amd64",
     "archive_sha256": "52f850cf79b9cda0b00b78aa2fed86bae6947e596cc7cafb52dba4fd88acb07d"
   },
-  "upstream_release": "reSOTv0.3.4",
-  "ps5_content_version": "01.003.006"
+  "upstream_release": "reSOTv0.4.0",
+  "ps5_content_version": "01.004.000"
 }

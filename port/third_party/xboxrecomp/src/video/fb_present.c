@@ -1024,17 +1024,23 @@ static DWORD WINAPI fb_thread(LPVOID unused)
     (void)unused;
 
     {
-        WNDCLASSA wc;
+        WNDCLASSEXA wc;
         memset(&wc, 0, sizeof(wc));
+        wc.cbSize = sizeof(wc);
         wc.style = CS_DBLCLKS; /* RE-SoT: double-click rebinding in F6. */
         wc.lpfnWndProc   = fb_wndproc;
         wc.hInstance     = GetModuleHandleA(NULL);
         wc.hCursor       = LoadCursorA(NULL, IDC_ARROW);
         /* RE-SoT: the executable's own icon (resource 1, port/windows/res)
-         * on the window and the taskbar; NULL, the default, when absent. */
+         * on the taskbar; NULL, the default, when absent. The title bar's
+         * small icon is resource 2, the same picture with its colours
+         * inverted, because the light logo vanished on a white frame. */
         wc.hIcon         = LoadIconA(wc.hInstance, MAKEINTRESOURCEA(1));
+        wc.hIconSm       = (HICON)LoadImageA(wc.hInstance, MAKEINTRESOURCEA(2), IMAGE_ICON,
+                                             GetSystemMetrics(SM_CXSMICON),
+                                             GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR);
         wc.lpszClassName = "XboxRecompFramebuffer";
-        RegisterClassA(&wc);
+        RegisterClassExA(&wc);
     }
     r.left = 0; r.top = 0; r.right = (LONG)s_fb_width; r.bottom = (LONG)s_fb_height;
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
@@ -1132,6 +1138,25 @@ static DWORD WINAPI fb_thread(LPVOID unused)
                     overlay_compose();
                 }
                 xbox_FramebufferDumpBmp(dump);
+            }
+            /* RE-SoT: RESOT_FB_BURST=<window frame>,<count> also writes that
+             * many consecutive window frames as <RECOMP_FB_DUMP>_burst_NNN.bmp,
+             * to compare neighbouring frames (flicker). */
+            {
+                static int burst_at = -1, burst_n;
+                const char *burst = getenv("RESOT_FB_BURST");
+                if (burst_at < 0) {
+                    burst_at = burst ? atoi(burst) : 0;
+                    burst_n = burst && strchr(burst, ',') ? atoi(strchr(burst, ',') + 1) : 0;
+                }
+                if (dump && burst_at > 0 && frames >= burst_at && frames < burst_at + burst_n
+                        && s_hw_mode && s_rgb) {
+                    char path[600];
+                    if (!nv2a_hw_readback(s_rgb, s_fb_width, s_fb_height))
+                        memset(s_rgb, 0, (size_t)s_fb_width * s_fb_height * 4);
+                    snprintf(path, sizeof path, "%s_burst_%03d.bmp", dump, frames - burst_at);
+                    xbox_FramebufferDumpBmp(path);
+                }
             }
         }
         {

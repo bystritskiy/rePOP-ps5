@@ -12,6 +12,7 @@
 #include "nv2a_native_compat.h" /* RE-SoT: bounded device workaround; environment override for A/B. */
 #include "nv2a_texture_probe.h" /* RE-SoT: separate source/upload/mip corruption using readbacks. */
 #include "resot_geometry_cache.h" /* RE-SoT: reuse immutable input geometry, keep per-draw constants live. */
+#include "resot_hd_font.h" /* RE-SoT: an HD menu font made from the title's sheet. */
 #include "nv2a_hw_native_visibility.inc"
 static NgVisibility s_ng_visibility; /* RE-SoT: retail-only counting, shared native drivers. */
 static int s_ng_compat; /* RE-SoT: reference GPU shaders, not the CPU vertex interpreter. */
@@ -48,6 +49,7 @@ typedef struct {
     SDL_GPUTexture *image;
     Texture guest;
     uint32_t hash, checked, used;
+    int hd; /* RE-SoT: the HD menu font in place of the guest sheet (resot_hd_font.h). */
 } NgTexture;
 /* RE-SoT: stable, collision-checked program entries. Workers only read the
  * immutable source/key; shader publication is protected by each entry's lock.
@@ -171,6 +173,7 @@ static struct {
     int vc_valid, pc_valid;
     /* RE-SoT: overlay and F5/F6 panel images, kept while their size holds. */
     SDL_GPUTexture *overlay, *panel;
+    SDL_GPUTexture *e3logo; /* RE-SoT: demo menu logo (ng_compose) */
     uint32_t overlay_w, overlay_h, overlay_serial, panel_w, panel_h;
     DWORD movie_log;
     uint32_t movie_composes; /* RE-SoT: distinguish movie repaint cadence from guest flips. */
@@ -901,12 +904,16 @@ static SDL_GPUTexture *ng_depth(NgSurface *s)
  * the decoded copy (port/ps5/src/buttons_ps5.c); other textures pass. */
 extern void resot_ps5_texture_decoded(uint32_t *px, uint32_t width, uint32_t height);
 #endif
+#if RESOT_RUNTIME_DEMO
+static uint32_t s_e3_logo[256*64]; /* RE-SoT: the E3 logo texture, upright */
+static int s_e3_logo_ready;
+#endif
 static SDL_GPUTexture *ng_texture(int stage, NgSurface *target)
 {
     const Texture *t = &s_gpu.texs[stage];
     NgSurface *best = NULL;
     NgTexture *c = NULL, *victim = NULL;
-    uint32_t i, slot, hash, layers, face, *px, levels = 1;
+    uint32_t i, slot, hash, layers, face, *px, levels = 1, w, h;
     int reuse_image = 0; /* RE-SoT: SDL cycling preserves earlier sampled versions. */
     if (!t->valid || !t->width || !t->height || t->width > 4096 || t->height > 4096) return NULL;
     for (i = 0; !t->cube && i < HW_MAX_SURFACES; i++) {
@@ -945,15 +952,7 @@ static SDL_GPUTexture *ng_texture(int stage, NgSurface *target)
     /* RE-SoT: flush readers before cycling or recreating. SDL retires the
      * old backing image after its last encoded GPU use. */
     if (c->image) ng_flush_draws(); /* RE-SoT: retire a sampled version only after encoding its draws. */
-    if (c->image && !reuse_image) SDL_ReleaseGPUTexture(s_ng.device, c->image);
     layers = t->cube ? 6 : 1;
-    if (t->levels > 1 && tex_size_from_format(t->color)) {
-        uint32_t extent = t->width > t->height ? t->width : t->height;
-        while ((extent >>= 1) != 0) levels++;
-    }
-    if (!reuse_image) c->image = ng_image(t->width, t->height, t->cube, levels,
-        SDL_GPU_TEXTUREUSAGE_SAMPLER | (levels > 1 ? SDL_GPU_TEXTUREUSAGE_COLOR_TARGET : 0),
-        SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM);
     px = (uint32_t *)malloc((size_t)t->width*t->height*layers*4);
     if (!px) ng_fail("decode texture allocation");
     /* RE-SoT: same bulk P8/ARGB conversion as D3D11, including Android. */
@@ -963,8 +962,55 @@ static SDL_GPUTexture *ng_texture(int stage, NgSurface *target)
 #if defined(RESOT_PS5_GPU)
     if (!t->cube) resot_ps5_texture_decoded(px, t->width, t->height); /* RE-SoT: PS5 button prompts. */
 #endif
-    ng_upload_cycle(c->image, px, t->width, t->height, layers, levels > 1, reuse_image);
-    if(s_ng.texture_probe && !t->cube && t->color<256 && s_ng.texture_probe_count<12 &&
+    /* RE-SoT: the menu font sheet becomes an HD image with the same layout,
+     * made from it (resot_hd_font.h); the image is decoded first so its size
+     * is known before the host image is made. */
+    {
+        int hd = t->cube ? 0 : resot_hd_font_match(px, t->width, t->height);
+        uint32_t *big = hd ? resot_hd_font_pixels(px) : NULL;
+        if (big) { free(px); px = big; w = RESOT_HD_FONT_W; h = RESOT_HD_FONT_H; }
+        else { hd = 0; w = t->width; h = t->height; }
+        if (reuse_image && c->hd != hd) reuse_image = 0;
+        c->hd = hd;
+    }
+#if RESOT_RUNTIME_DEMO
+    /* RE-SoT: the E3 "Prince of Persia" logo is hidden, at the user's request:
+     * with reSOT's menu entries it was drawn partly past the right edge, and
+     * neither the cause nor its draw was found. Texture 0x0B0044F9 (256x64
+     * BGRA8 in GameInterface, CameraAndGlobal, Menu and _Start_Demo, beside
+     * the GAO E3_WorkInProgress 0x0B0044F7), recognised by the FNV-1a hash
+     * of its decoded pixels, is uploaded fully transparent. Every draw of it
+     * goes, including any menu use. */
+    if (!t->cube && t->width == 256 && t->height == 64) {
+        static unsigned told;
+        uint32_t fnv = 2166136261u;
+        const uint8_t *b = (const uint8_t *)px;
+        size_t k;
+        for (k = 0; k < (size_t)256*64*4; k++) fnv = (fnv ^ b[k]) * 16777619u;
+        if (fnv == 0x72C687A6u) {
+            /* Kept, upright (the sheet is stored bottom-up), for the menu
+             * logo ng_compose draws; then hidden in the game's own draws. */
+            uint32_t row;
+            for (row = 0; row < 64; row++)
+                memcpy(s_e3_logo + (size_t)row*256, px + (size_t)(63 - row)*256, 256*4);
+            s_e3_logo_ready = 1;
+            memset(px, 0, (size_t)256*64*4);
+        }
+        if (told++ < 8)
+            fprintf(stderr, "[LOGO] 256x64 texture %08X: hash %08X%s\n", t->offset, fnv,
+                    fnv == 0x72C687A6u ? ", the E3 logo: hidden" : "");
+    }
+#endif
+    if (c->image && !reuse_image) SDL_ReleaseGPUTexture(s_ng.device, c->image);
+    if (t->levels > 1 && tex_size_from_format(t->color)) {
+        uint32_t extent = w > h ? w : h;
+        while ((extent >>= 1) != 0) levels++;
+    }
+    if (!reuse_image) c->image = ng_image(w, h, t->cube, levels,
+        SDL_GPU_TEXTUREUSAGE_SAMPLER | (levels > 1 ? SDL_GPU_TEXTUREUSAGE_COLOR_TARGET : 0),
+        SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM);
+    ng_upload_cycle(c->image, px, w, h, layers, levels > 1, reuse_image);
+    if(s_ng.texture_probe && !c->hd && !t->cube && t->color<256 && s_ng.texture_probe_count<12 &&
        s_ng.texture_probe_formats[t->color]<2 && (uint64_t)t->width*t->height<=1024*1024) {
         ResotTextureProbe probes[RESOT_PROBE_MIPS];
         const uint8_t *raw=(const uint8_t *)xbox_GetMemoryOffset()+t->offset;
@@ -2121,6 +2167,30 @@ static void ng_compose(void)
     vp.x = px; vp.y = py; vp.w = pw; vp.h = ph; vp.min_depth = 0; vp.max_depth = 1;
     if (s_ng.front)
         ng_blit(s_ng.composed, SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, s_ng.front->color, &vp, NULL, 1, 15, NULL, 1);
+#if RESOT_RUNTIME_DEMO
+    /* RE-SoT: the E3 build's menu showed the "Prince of Persia / The Sands of
+     * Time" logo at the top left (user's screenshot); this demo's menu does
+     * not draw it. While a menu is up (resot_menu_scene 1, main or pause),
+     * the game's own logo texture, kept by ng_texture, is drawn there over
+     * the picture, in the 4:3 frame: x 9..57 %, from 8.5 % down. */
+    {
+        extern int resot_menu_scene(void);
+        if (s_e3_logo_ready && s_ng.front && resot_menu_scene() == 1) {
+            float mw = ph*(4.0f/3.0f), mx = px+(pw-mw)*0.5f;
+            SDL_GPUViewport lv;
+            if (!s_ng.e3logo) {
+                s_ng.e3logo = ng_image(256,64,0,1,SDL_GPU_TEXTUREUSAGE_SAMPLER,
+                                       SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM);
+                ng_upload(s_ng.e3logo, s_e3_logo, 256, 64, 1, 0);
+                fprintf(stderr, "[LOGO] E3 logo drawn over the menu\n");
+            }
+            lv.x = mx + 0.09f*mw; lv.y = py + 0.085f*ph;
+            lv.w = 0.48f*mw; lv.h = lv.w * 64.0f/256.0f;
+            lv.min_depth = 0; lv.max_depth = 1;
+            ng_blit(s_ng.composed,SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,s_ng.e3logo,&lv,NULL,3,15,NULL,0);
+        }
+    }
+#endif
     if (xbox_FramebufferOverlayGet(&pixels, &w, &h, rect, &serial) && w && h) {
         /* RE-SoT: movies often issue no FLIP_STALL; guest FPS cannot measure
          * their presenter. Report compositions, not claimed decoded frames. */

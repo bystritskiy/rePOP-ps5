@@ -7,10 +7,12 @@ adaptations in the shared runtime (marked `RE-SoT`), and the build,
 packaging and install tools.
 
 **Status (2026-10-28).** Based on upstream
-[FulGerNet/rePOP v0.3.4](https://github.com/FulGerNet/rePOP/releases/tag/reSOTv0.3.4)
-(`reSOTv0.3.4`, `04cacf3310fc612a70dded28f004a046463d4eb4`); PS5 content
-version `01.003.006`. Retail and demo compile and link with SDL3 GPU, Vulkan
-and RADV. On a console the retail build, installed as a folder, reached the
+[FulGerNet/rePOP v0.4.0](https://github.com/FulGerNet/rePOP/releases/tag/reSOTv0.4.0)
+(`reSOTv0.4.0`, `828ebf32c6abea108f4d23c174191be4faa6ae2c`); PS5 content
+version `01.004.000`. Retail and demo compile and link with SDL3 GPU, Vulkan
+and RADV. 01.004.000 has not been run on a console yet; what follows was
+seen with 01.003.006 (upstream v0.3.4). On a console the retail build,
+installed as a folder, reached the
 title screen, the main menu, the profile name keyboard, the palace balcony
 cutscene and the first gameplay frames, with correct lighting, fog and
 textures, at about 60 fps. Button prompts show PlayStation buttons. The app
