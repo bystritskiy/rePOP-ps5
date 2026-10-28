@@ -29,6 +29,15 @@ the private Russian image is now its own title, PPSA99024
 `/data/reSOT/PPSA99024`; the earlier Russian image with PPSA99023 was moved
 out of `/data/homebrew` so the two IDs do not collide.
 
+Defaults of a new install, by reading `options_android.c`: with no
+`GraphicsPreset` in the INI, `resot_graphics_preset(-1, 3, 0)` gives 2,
+Standard, so a new install had 1440p and Standard, not the Full the README
+claimed; the console's own INI had Full because it was chosen in the menu.
+The PS5 now starts at 2160p (4.5x) with Full (`RESOT_DEFAULT_TEXTURE_GLOW`
+1, so the preset resolves to 3) and VSync on, the configuration measured at
+about 60 fps in play. Not checked on a fresh install: both INIs on the
+console already hold `InternalResolutionPercent=450` and `GraphicsPreset=3`.
+
 Not checked: any of it on the console (that the app starts, Special Load
 Map, the cheats switch, the HD font, the 7601 Salle fix on the PS5's 16 KiB
 pages), and whether options and saves of 01.003.006 carry over.

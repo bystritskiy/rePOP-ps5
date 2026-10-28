@@ -187,10 +187,12 @@ controller drawing on the controls screen are still the originals.
 - SDL3 3.4.18 with a VideoOut WSI over `VK_KHR_display` and a static Vulkan
   ICD; upstream's SDL GPU-query patch is kept. Output is 3840x2160, 16:9
   (the window's size picks the VideoOut mode; VideoOut scales it to the
-  screen). A new install renders at 1440p (3x) internal resolution with the
-  Full preset and VSync on (`options_android.c` under `RESOT_PS5`); the INI
-  and reSOT Options, Graphics, override them. The PS5 adds a 2160p (4.5x)
-  internal resolution.
+  screen). A new install renders at 2160p (4.5x) internal resolution with
+  the Full preset and VSync on (`options_android.c` under `RESOT_PS5`); the
+  INI and reSOT Options, Graphics, override them. The PS5 adds the 2160p
+  internal resolution. Before 01.004.000 a new install got 1440p (3x) and
+  the Standard preset: with no `GraphicsPreset` in the INI the preset follows
+  the texture glow default, which the PS5 now sets.
 - Movies (the NV2A video overlay) are drawn with a bicubic Catmull-Rom
   shader (`ps_movie`). A full-width movie leaves the 4:3 frame: it fills the
   16:9 picture when that crops no more than 6% of it (the 640x346 story

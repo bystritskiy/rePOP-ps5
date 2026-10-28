@@ -58,9 +58,10 @@ Seen on the console:
 - PlayStation buttons in the game's prompts (Cross, Circle, L1 and R1 seen
   so far).
 
-A new install starts at 1440p with the Full preset and VSync on; the internal
-resolution (up to 2160p), the graphics preset, the frame limit and VSync can
-be changed in the game's reSOT Options, Graphics. The story cutscenes
+A new install starts at 2160p (4.5x, the 4K output's size) with the Full
+preset and VSync on; until 01.004.000 it started at 1440p with the Standard
+preset (the README said Full). The internal resolution, the graphics preset,
+the frame limit and VSync can be changed in the game's reSOT Options, Graphics. The story cutscenes
 (640x346 movies) fill the 16:9 screen, cropping about 2% at each side, and
 movies are scaled up with a bicubic filter; the full-screen cutscenes have
 not been seen on the console yet.

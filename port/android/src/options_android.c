@@ -62,14 +62,19 @@ static const char *const s_render_names[] = {"240p (0.5x)","360p (0.75x)","480p 
 #define RENDER_SCALES ((int)(sizeof s_render_scales/sizeof s_render_scales[0]))
 static int s_resolution = 2; /* Android default: guest-sized main targets. */
 #if defined(RESOT_PS5)
-/* RE-SoT (PS5): one console, measured at about 60 fps with 1440p (3x) and
- * VSync on (docs/VALIDATION.md, 2026-10-27), so a new install starts there.
- * The INI and the Graphics page still override both. */
-#define RESOT_DEFAULT_RENDER_PERCENT 300
+/* RE-SoT (PS5): one console, measured at about 60 fps in play at 2160p
+ * (4.5x) with the Full preset and VSync on (docs/VALIDATION.md), so a new
+ * install starts there: the console's 4K output, drawn at that size. With no
+ * GraphicsPreset in the INI the texture glow default makes the preset Full
+ * (resot_graphics_preset; Standard without it). The INI and the Graphics
+ * page still override all three. */
+#define RESOT_DEFAULT_RENDER_PERCENT 450
 #define RESOT_DEFAULT_VSYNC 1
+#define RESOT_DEFAULT_TEXTURE_GLOW 1
 #else
 #define RESOT_DEFAULT_RENDER_PERCENT 100
 #define RESOT_DEFAULT_VSYNC (env && *env != '0')
+#define RESOT_DEFAULT_TEXTURE_GLOW 0
 #endif
 
 static SRWLOCK s_lock = SRWLOCK_INIT;
@@ -414,7 +419,7 @@ void resot_options_init(void)
     s_post_quality=ini_get("Graphics","GraphicsPreset",-1);
     if(s_post_quality==-1) {
         int old=ini_get("Graphics","PostProcessingQuality",3);
-        int glow=ini_get("Graphics","TextureGlowEffect",0)!=0;
+        int glow=ini_get("Graphics","TextureGlowEffect",RESOT_DEFAULT_TEXTURE_GLOW)!=0;
         s_post_quality=resot_graphics_preset(-1,old,glow);
     }
     s_post_quality=resot_graphics_preset(s_post_quality,3,0);
