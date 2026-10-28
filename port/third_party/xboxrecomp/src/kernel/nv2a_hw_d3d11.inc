@@ -537,6 +537,21 @@ static const char s_hw_hlsl[] =
 "float4 ps_blit(BO i) : SV_Target { return float4(tx0.Sample(sm0, i.uv).rgb, 1.0); }\n"
 /* RE-SoT: movie blits stay opaque; only the host panel uses its texture alpha. */
 "float4 ps_debug(BO i) : SV_Target { return tx0.Sample(sm0, i.uv); }\n"
+/* RE-SoT (PS5): a 640-pixel movie is scaled about three times on a 1080p
+ * screen and six on a 2160p one. Catmull-Rom (bicubic) in nine bilinear taps
+ * keeps edges sharper than one bilinear tap, without a sharpening halo. */
+"float3 movie_row(float y, float3 x, float3 k) {\n"
+"  return tx0.Sample(sm0, float2(x.x, y)).rgb * k.x + tx0.Sample(sm0, float2(x.y, y)).rgb * k.y\n"
+"       + tx0.Sample(sm0, float2(x.z, y)).rgb * k.z; }\n"
+"float4 ps_movie(BO i) : SV_Target {\n"
+"  float w, h; tx0.GetDimensions(w, h); float2 n = float2(w, h);\n"
+"  float2 p = i.uv * n, b = floor(p - 0.5) + 0.5, f = p - b;\n"
+"  float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f)), w1 = 1.0 + f * f * (-2.5 + 1.5 * f);\n"
+"  float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f)), w3 = f * f * (-0.5 + 0.5 * f), wm = w1 + w2;\n"
+"  float2 t0 = (b - 1.0) / n, tm = (b + w2 / wm) / n, t3 = (b + 2.0) / n;\n"
+"  float3 x = float3(t0.x, tm.x, t3.x), k = float3(w0.x, wm.x, w3.x);\n"
+"  float3 c = movie_row(t0.y, x, k) * w0.y + movie_row(tm.y, x, k) * wm.y + movie_row(t3.y, x, k) * w3.y;\n"
+"  return float4(saturate(c), 1.0); }\n"
 "cbuffer PSC : register(b0) {\n"
 "  uint4 cw[8]; float4 fac0[8]; float4 fac1[8];\n"
 "  uint4 ctl; uint4 atest; float4 finc0; float4 finc1; float4 fogc;\n"
@@ -927,7 +942,12 @@ static void hw_post_mark(uint32_t offset,uint32_t w,uint32_t h)
 void xbox_SetRenderScalePercent(int percent)
 {
     if (percent!=50 && percent!=75 && percent!=100 && percent!=150 &&
-        percent!=225 && percent!=300) percent=100;
+        percent!=225 && percent!=300
+#if defined(RESOT_PS5_GPU)
+        /* RE-SoT (PS5): 2160p, for the console's 3840x2160 output. */
+        && percent!=450
+#endif
+        ) percent=100;
     InterlockedExchange(&s_render_percent,percent);
 }
 static uint32_t hw_py(uint32_t y,uint32_t sc)

@@ -1,6 +1,6 @@
 # Validation log
 
-## PS5 port, 2026-10-22 to 2026-10-27 (this fork)
+## PS5 port, 2026-10-22 to 2026-10-28 (this fork)
 
 What follows was run on a macOS host and on one console: FW 13.40,
 kstuff-lite 1.11, ShadowMountPlus 1.7-beta5fix1. The retail disc files were
@@ -97,6 +97,22 @@ Options, 17 of the first 19 renderer reports were 58-60 fps.
 atlas`; renderer reports 0.3 and 27.6 fps while starting, then 59.9 three
 times. The preset is not logged without an INI; Full comes from the code's
 default (unchanged).
+
+01.003.006, 4K output and movies (2026-10-28): shaders rebuilt with
+`tools/build-native-shaders.py` (DXC v1.9.2609, now with `ps_movie`), retail
+compiled, linked and packaged, the folder deployed with
+`deploy-ps5-folder.py`, and run with the US disc's files. The log showed
+`[PS5 WSI] VideoOut 3840x2160 59.940 Hz` (it was 1920x1080 before). reSOT
+Options cycled through all seven internal resolutions, `450% (2160p for
+480-line guest)` included, and kept 450 in `resot-options.ini`. At 2160p
+with the Full preset 15 of 16 renderer reports in play were 59.8-60.0 fps;
+the other, 18.3, was a level load (631 ms of texture uploads in it). Movies
+played through the new shader were 640x448 and 640x480 (logos, intro,
+loading: fitted to the height, `movie composition` 59.9-61.1 Hz); the user
+saw no problem on screen. Not seen: a 640x346 story movie filling the
+screen, frame rate at 2160p in later levels, Windows' `check-hlsl.py` with
+`ps_movie`, and Windows and Android builds (`ps_movie` is compiled for every
+host but created and used only under `RESOT_PS5_GPU`).
 
 `ps5-native-tool` built from the pinned PS5_Vulkan `tooling/native` sources
 (command in `port/ps5/README.md`) signs the linked retail ELF to the same

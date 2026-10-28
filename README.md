@@ -38,22 +38,25 @@ at 1440p (3x) internal resolution.</sub></p>
 
 ## Status
 
-Version **01.003.005**, based on upstream reSOT v0.3.4. Tested on one
+Version **01.003.006**, based on upstream reSOT v0.3.4. Tested on one
 console: FW 13.40, kstuff-lite 1.11, ShadowMountPlus 1.7-beta5fix1.
 
 Seen on the console:
 
 - title screen, menus, the profile keyboard, the opening cutscene and early
   gameplay, with correct lighting, fog and textures;
-- about 60 fps in play at 1440p internal resolution (3x, scaled to the
-  1920x1080 output) with the Full graphics preset;
+- 3840x2160 output, and about 60 fps in play at 1440p (3x) and at 2160p
+  (4.5x) internal resolution with the Full graphics preset;
 - the app finding the disc files in `/data/reSOT/xbox-retail`;
 - PlayStation buttons in the game's prompts (Cross, Circle, L1 and R1 seen
   so far).
 
 A new install starts at 1440p with the Full preset and VSync on; the internal
-resolution, the graphics preset, the frame limit and VSync can be changed in
-the game's reSOT Options, Graphics.
+resolution (up to 2160p), the graphics preset, the frame limit and VSync can
+be changed in the game's reSOT Options, Graphics. The story cutscenes
+(640x346 movies) fill the 16:9 screen, cropping about 2% at each side, and
+movies are scaled up with a bicubic filter; the full-screen cutscenes have
+not been seen on the console yet.
 
 Not checked yet: sound, controller input through a whole level, rumble,
 saves, later levels, the screen shown when no game is found, game files on

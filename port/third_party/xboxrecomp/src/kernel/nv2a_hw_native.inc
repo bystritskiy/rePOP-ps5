@@ -122,6 +122,9 @@ static struct {
     SDL_GPUDevice *device;
     SDL_GPUCommandBuffer *cmd;
     SDL_GPUShader *vs, *blit_vs, *ps, *blit_ps, *solid_ps, *panel_ps;
+#if defined(RESOT_PS5_GPU)
+    SDL_GPUShader *movie_ps; /* RE-SoT (PS5): bicubic movie scaling, pipeline shader 9. */
+#endif
     SDL_GPUShader *simple_ps, *simple_alpha_ps; /* RE-SoT: opaque one-stage combiner, no discard. */
     uint64_t simple_draws, guest_draws; /* RE-SoT: observe fast-path coverage on-device. */
     uint64_t small_vsh_draws; /* RE-SoT: measure actual program admission. */
@@ -529,6 +532,9 @@ static void ng_shutdown(void)
         if (s_ng.blit_ps) SDL_ReleaseGPUShader(s_ng.device,s_ng.blit_ps);
         if (s_ng.solid_ps) SDL_ReleaseGPUShader(s_ng.device,s_ng.solid_ps);
         if (s_ng.panel_ps) SDL_ReleaseGPUShader(s_ng.device,s_ng.panel_ps);
+#if defined(RESOT_PS5_GPU)
+        if (s_ng.movie_ps) SDL_ReleaseGPUShader(s_ng.device,s_ng.movie_ps);
+#endif
         if (s_ng.uber_vs) SDL_ReleaseGPUShader(s_ng.device,s_ng.uber_vs);
         if (s_ng.small_vs) SDL_ReleaseGPUShader(s_ng.device,s_ng.small_vs); /* RE-SoT */
         /* RE-SoT: workers stopped and pipelines released before program entries. */
@@ -712,6 +718,10 @@ static int ng_init(const char *backend)
     s_ng.blit_ps = NG_SHADER(ps_blit, 0, 1, 0);
     s_ng.solid_ps = NG_SHADER(ps_solid, 0, 0, 1);
     s_ng.panel_ps = NG_SHADER(ps_debug, 0, 1, 0);
+#if defined(RESOT_PS5_GPU)
+    s_ng.movie_ps = NG_SHADER(ps_movie, 0, 1, 0);
+    if (!s_ng.movie_ps) goto fail;
+#endif
     s_ng.vertices = SDL_CreateGPUBuffer(s_ng.device, &vb);
     /* RE-SoT: GPU vertex programs. RESOT_NATIVE_CPU_VSH=1 keeps the CPU
      * interpreter (the previous behaviour), for comparison and fallback.
@@ -1042,6 +1052,9 @@ static SDL_GPUGraphicsPipeline *ng_pipeline_build(const NgPipelineKey *key, int 
     if (key->small_vsh) ci.vertex_shader = s_ng.small_vs; /* RE-SoT: selector already proved absent high-temp reads. */
     ci.fragment_shader = key->shader == 7 || key->shader == 8 ? s_ng.simple_alpha_ps : key->shader == 5 || key->shader == 6 ? s_ng.simple_ps : key->shader == 0 || key->shader == 4 ? s_ng.ps : key->shader == 1 ? s_ng.blit_ps :
                          key->shader == 2 ? s_ng.solid_ps : s_ng.panel_ps;
+#if defined(RESOT_PS5_GPU)
+    if (key->shader == 9) ci.fragment_shader = s_ng.movie_ps;
+#endif
     /* RE-SoT: compile immutable programs once; reference shaders survive failures. */
     if(key->translated_vs) {
         SDL_GPUShader *translated=ng_vertex_compile(key->translated_vs);
@@ -1051,7 +1064,7 @@ static SDL_GPUGraphicsPipeline *ng_pipeline_build(const NgPipelineKey *key, int 
         SDL_GPUShader *translated=ng_fragment_compile(key->specialized_ps);
         if(translated) ci.fragment_shader=translated;
     }
-    if (!key->shader || key->shader >= 4) { /* RE-SoT: guest shader input layout, including simple variants. */
+    if (!key->shader || (key->shader >= 4 && key->shader != 9)) { /* RE-SoT: guest shader input layout, including simple variants; 9 is the PS5 movie blit. */
         vb.pitch = key->vertex_stride ? key->vertex_stride : sizeof(HwVertex);
         vb.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
         ci.vertex_input_state.vertex_buffer_descriptions = &vb; ci.vertex_input_state.num_vertex_buffers = 1;
@@ -2132,7 +2145,26 @@ static void ng_compose(void)
         }
         vp.x = mx+rect[0]*mw/640; vp.y = py+rect[1]*ph/480;
         vp.w = rect[2]*mw/640; vp.h = rect[3]*ph/480;
+#if defined(RESOT_PS5_GPU)
+        /* RE-SoT (PS5): a full-width movie leaves the 4:3 frame and is
+         * scaled, keeping its proportions, to the picture. The story movies
+         * and visions are 640x346 (1.85:1, no bars inside the frame,
+         * cropdetect 2026-10-28): they fill a 16:9 picture, losing 2% of
+         * their width at each side, instead of 1440x778 with bars on all four
+         * sides at 1080p. A movie that would lose more than 6% of its width
+         * fits instead (640x448 logos and loading screens, 640x432: they
+         * meet the height, nothing cut). */
+        if (rect[2] >= 600 && rect[3] > 0) {
+            float fit = pw/rect[2] < ph/rect[3] ? pw/rect[2] : ph/rect[3];
+            float fill = pw/rect[2] > ph/rect[3] ? pw/rect[2] : ph/rect[3];
+            float s = rect[2]*fill <= pw*1.06f && rect[3]*fill <= ph*1.06f ? fill : fit;
+            vp.w = rect[2]*s; vp.h = rect[3]*s;
+            vp.x = px+(pw-vp.w)*0.5f; vp.y = py+(ph-vp.h)*0.5f;
+        }
+        ng_blit(s_ng.composed,SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,s_ng.overlay,&vp,NULL,9,15,NULL,0);
+#else
         ng_blit(s_ng.composed,SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,s_ng.overlay,&vp,NULL,1,15,NULL,0);
+#endif
     }
     else { s_ng.movie_log = 0; s_ng.movie_composes = 0; }
     if (xbox_FramebufferDebugPanelGet(&pixels,&w,&h) && w && h) {

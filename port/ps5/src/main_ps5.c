@@ -343,7 +343,10 @@ int main(int argc,char **argv)
 #endif
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"offscreen");
     if(!SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS)){boot_log("[BOOT] SDL: %s\n",SDL_GetError());return 1;}
-    SDL_Window *window=SDL_CreateWindow("reSOT - " RESOT_TARGET_NAME,1920,1080,SDL_WINDOW_VULKAN);
+    /* VideoOut takes 3840x2160, 2560x1440 and 1920x1080 buffers and scales
+     * each to the screen (PS5_Mesa wsi_common_videoout.c); the window's size
+     * picks the mode. 1080p sent a 1440p picture to a 4K screen at 1080p. */
+    SDL_Window *window=SDL_CreateWindow("reSOT - " RESOT_TARGET_NAME,3840,2160,SDL_WINDOW_VULKAN);
     if(!window){boot_log("[BOOT] window: %s\n",SDL_GetError());return 1;}
     xbox_FramebufferHostSetWindow(window);xbox_FramebufferSetWowProvider(resot_current_wow);
     resot_options_init();xbox_InputInit();
