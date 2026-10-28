@@ -21,10 +21,17 @@ build/ps5/game-xbox-retail` and `tools/link-ps5-game.sh xbox-retail` in the
 Docker builder: compile and link; the same for `game-xbox-demo` (a fresh
 build folder).
 
-Not checked: any of it on the console (Special Load Map, the cheats switch,
-the HD font, the 7601 Salle fix on the PS5's 16 KiB pages), packaging and
-the folder install of 01.004.000, and whether options and saves of
-01.003.006 carry over.
+Packaged (`package-ps5-game.py --zip`: `PPSA99023-01.004.000.zip`, sha256
+`ab5d270b...`) and copied to the console as the folder
+`/data/homebrew/PPSA99023` (`deploy-ps5-folder.py`, 26 files). Beside it,
+the private Russian image is now its own title, PPSA99024
+(`RESOT_PS5_TITLE_ID`, `package-ps5-game.py --title-id`), with its data in
+`/data/reSOT/PPSA99024`; the earlier Russian image with PPSA99023 was moved
+out of `/data/homebrew` so the two IDs do not collide.
+
+Not checked: any of it on the console (that the app starts, Special Load
+Map, the cheats switch, the HD font, the 7601 Salle fix on the PS5's 16 KiB
+pages), and whether options and saves of 01.003.006 carry over.
 
 ## PS5 port, 2026-10-22 to 2026-10-28 (this fork)
 
