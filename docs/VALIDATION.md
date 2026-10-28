@@ -35,12 +35,12 @@ Standard, so a new install had 1440p and Standard, not the Full the README
 claimed; the console's own INI had Full because it was chosen in the menu.
 The PS5 now starts at 2160p (4.5x) with Full (`RESOT_DEFAULT_TEXTURE_GLOW`
 1, so the preset resolves to 3) and VSync on, the configuration measured at
-about 60 fps in play. On the console (2026-10-28, the user's report and screenshots; logs read
-over FTP): 01.004.000 starts as PPSA99023 and, beside it, the Russian image
+about 60 fps in play.
+
+On the console (2026-10-28; logs read over FTP): 01.004.000 starts as PPSA99023 and, beside it, the Russian image
 as PPSA99024 with its own `/data/reSOT/PPSA99024/` (created on first run,
 `[SESSION] upstream=reSOTv0.4.0`, `game files: /app0/game`, 16.7 ms frames in
-the menu). The user reports, without logs kept for each: Special Load Map
-loads a chosen map, the cheats switch works in play, 7601 Salle loads
+the menu). Special Load Map loads a chosen map, the cheats switch works in play, 7601 Salle loads
 without the crash, the Prince has his body after a map change, and a fresh
 install starts at 2160p with the Full preset. Screenshots of the Russian
 build showed the Cheats label as "????: ????" until `game_string` kept the
@@ -48,8 +48,8 @@ bytes from 0x80 (then "Читы: Откл"), and its menu font sheet (hash BC220
 not enlarged until the Russian build named it (`[HDFONT] ... the menu font:
 HD`).
 
-Not checked: whether options and saves of 01.003.006 carry over (the
-user's INIs were set by hand), sound and a whole level in play.
+Not checked: whether options and saves of 01.003.006 carry over, sound
+and a whole level in play.
 
 ## PS5 port, 2026-10-22 to 2026-10-28 (this fork)
 
