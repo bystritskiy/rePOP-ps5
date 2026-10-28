@@ -10,8 +10,10 @@ packaging and install tools.
 [FulGerNet/rePOP v0.4.0](https://github.com/FulGerNet/rePOP/releases/tag/reSOTv0.4.0)
 (`reSOTv0.4.0`, `828ebf32c6abea108f4d23c174191be4faa6ae2c`); PS5 content
 version `01.004.000`. Retail and demo compile and link with SDL3 GPU, Vulkan
-and RADV. 01.004.000 has not been run on a console yet; what follows was
-seen with 01.003.006 (upstream v0.3.4). On a console the retail build,
+and RADV. With 01.004.000 the user saw on the console Special Load Map
+loading a map, the cheats switch in play, 7601 Salle without its crash, the
+Prince with his body after a map change, and a fresh install at 2160p with
+the Full preset. With 01.003.006 (upstream v0.3.4) the retail build,
 installed as a folder, reached the
 title screen, the main menu, the profile name keyboard, the palace balcony
 cutscene and the first gameplay frames, with correct lighting, fog and

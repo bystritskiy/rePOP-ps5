@@ -44,11 +44,12 @@ console: FW 13.40, kstuff-lite 1.11, ShadowMountPlus 1.7-beta5fix1.
 Upstream v0.4.0 brings Special Load Map and a built-in cheats switch in reSOT
 Options (main and pause menus), an HD menu font, and fixes for the crash in
 7601 Salle and for the Prince with only a head after a map change; see its
-[release notes](docs/releases/v0.4.0.md). On the PS5 they are built and
-linked, but 01.004.000 has not been run on the console yet: everything below
-was seen with 01.003.006.
+[release notes](docs/releases/v0.4.0.md). With 01.004.000 on the console
+(user's report, 2026-10-28): Special Load Map loads a chosen map, the cheats
+switch works in play, 7601 Salle no longer crashes, the Prince keeps his body
+after a map change, and a fresh install starts at 2160p with the Full preset.
 
-Seen on the console:
+Seen on the console (01.003.006 and 01.004.000):
 
 - title screen, menus, the profile keyboard, the opening cutscene and early
   gameplay, with correct lighting, fog and textures;
