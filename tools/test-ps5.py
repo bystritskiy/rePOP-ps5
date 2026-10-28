@@ -33,6 +33,8 @@ source = sdk_headers / "ps5platform"
 if not source.is_dir():
     raise SystemExit("Build the pinned PS5 platform dependency before the memory contract test")
 link = platform_headers / "ps5platform"
+if link.is_symlink() and link.resolve() != source.resolve():
+    link.unlink()  # left by a checkout that has since moved
 if not link.exists():
     link.symlink_to(source, target_is_directory=True)
 binary = out / "memory"

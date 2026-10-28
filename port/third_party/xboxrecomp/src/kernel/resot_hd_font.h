@@ -35,6 +35,11 @@
 #else
 #define RESOT_HD_FONT_HASH  0x00000000u
 #endif
+/* RE-SoT: one more sheet a build may enlarge, by its [HDFONT] hash (a
+ * localized sheet; the PS5 build's RESOT_HD_FONT_EXTRA_HASH); 0 for none. */
+#ifndef RESOT_HD_FONT_EXTRA_HASH
+#define RESOT_HD_FONT_EXTRA_HASH 0x00000000u
+#endif
 
 static uint32_t resot_hd_font_hash(const uint32_t *px, uint32_t w, uint32_t h)
 {
@@ -51,16 +56,18 @@ static int resot_hd_font_match(const uint32_t *px, uint32_t w, uint32_t h)
     static int off = -1;
     static unsigned reports;
     uint32_t hash;
+    int hit;
     if (w != RESOT_HD_SHEET_W || h != RESOT_HD_SHEET_H)
         return 0;
     if (off < 0) { const char *e = getenv("RESOT_HD_FONT"); off = e && *e == '0'; }
     if (off)
         return 0;
     hash = resot_hd_font_hash(px, w, h);
+    hit = hash != 0 && (hash == RESOT_HD_FONT_HASH || hash == RESOT_HD_FONT_EXTRA_HASH);
     if (reports++ < 8)
         fprintf(stderr, "[HDFONT] 512x128 texture: hash %08X%s\n", hash,
-                hash == RESOT_HD_FONT_HASH ? ", the menu font: HD" : "");
-    return hash == RESOT_HD_FONT_HASH && hash != 0;
+                hit ? ", the menu font: HD" : "");
+    return hit;
 }
 
 static float resot_hd_cubic(float a, float b, float c, float d, float t)

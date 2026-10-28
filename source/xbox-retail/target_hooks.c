@@ -796,7 +796,14 @@ static void game_string(uint32_t group, uint32_t index, char *out, unsigned size
     for (i = 0; s && i + 1 < size; i++) {
         char c = *(volatile char *)((uintptr_t)g_xbox_mem_offset + s + i);
         if (!c) break;
+#if defined(RESOT_PS5)
+        /* RE-SoT: bytes from 0x80 are letters of the game's own font (the
+         * accents of its European texts, Cyrillic in a Russian build): a
+         * Russian "Cheats: Off" read "????: ????". Only control bytes go. */
+        out[i] = ((unsigned char)c >= 32 && c != 127) ? c : '?';
+#else
         out[i] = (c >= 32 && c < 127) ? c : '?';
+#endif
     }
     out[s ? i : 0] = 0;
 }
