@@ -16,6 +16,12 @@ set_property(CACHE RESOT_TARGET PROPERTY STRINGS xbox-demo xbox-retail)
 if(NOT RESOT_TARGET MATCHES "^(xbox-demo|xbox-retail)$")
     message(FATAL_ERROR "Unsupported RESOT_TARGET")
 endif()
+# The app's title ID names its data folder, /data/reSOT/<ID>; it must match
+# the titleId of the packaged sce_sys/param.json (tools/package-ps5-game.py).
+set(RESOT_PS5_TITLE_ID PPSA99023 CACHE STRING "PS5 title ID of the app")
+if(NOT RESOT_PS5_TITLE_ID MATCHES "^PPSA[0-9][0-9][0-9][0-9][0-9]$")
+    message(FATAL_ERROR "RESOT_PS5_TITLE_ID must be PPSA and five digits")
+endif()
 if(RESOT_TARGET STREQUAL "xbox-demo")
     set(runtime_define RESOT_RUNTIME_DEMO=1)
 else()
@@ -88,7 +94,8 @@ if(RESOT_PS5_GPU)
     target_compile_definitions(resot_start PRIVATE RESOT_PS5=1 ${runtime_define})
     target_compile_definitions(resot_start PRIVATE
         RESOT_UPSTREAM_RELEASE="${resot_upstream_release}"
-        RESOT_UPSTREAM_COMMIT="${resot_upstream_commit}")
+        RESOT_UPSTREAM_COMMIT="${resot_upstream_commit}"
+        RESOT_PS5_TITLE_ID="${RESOT_PS5_TITLE_ID}")
     target_include_directories(resot_start PRIVATE "${CMAKE_CURRENT_LIST_DIR}/compat"
         "${dir}" "${RT}" "${RT}/kernel" "${RT}/platform" "${RT}/apu"
         "${RESOT_SDL_SOURCE}/include")

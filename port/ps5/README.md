@@ -109,6 +109,13 @@ that has [MkPFS](https://github.com/PSBrew/MkPFS) 1.1.0
 The image, `bin/ps5/reSOT-PS5-PPSA99023.ffpfsc`, is unpacked again and
 compared file by file before it is kept.
 
+A build that should be installed beside this app (a private variant, for
+example) needs a title ID of its own: configure with
+`-DRESOT_PS5_TITLE_ID=PPSAnnnnn`, which also names its data folder
+`/data/reSOT/PPSAnnnnn/`, and package with `--title-id PPSAnnnnn
+--content-id <contentId>`. The packager refuses a linked build whose data
+folder names another ID. The default, `PPSA99023`, is the published app's.
+
 The demo target builds the same way with `-DRESOT_TARGET=xbox-demo` in its
 own build folder; it has not been packaged or run on a console.
 

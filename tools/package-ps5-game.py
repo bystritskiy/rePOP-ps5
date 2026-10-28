@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location('ps5_build', ROOT/'tools/build-ps5.py')
 b = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(b)
-TITLE = 'PPSA99023'
+TITLE = 'PPSA99023'   # port/ps5/sce_sys/param.json
 
 
 def main():
@@ -26,7 +26,17 @@ def main():
     p.add_argument('--game', type=Path)
     p.add_argument('--pack-python', type=Path)
     p.add_argument('--zip', action='store_true', help='write bin/ps5/<ID>-<contentVersion>.zip (no game only)')
+    # Another title ID makes an app that can be installed beside this one
+    # (a private build, for example). The build must use the same ID
+    # (cmake -DRESOT_PS5_TITLE_ID), because it names the data folder.
+    p.add_argument('--title-id', default=TITLE)
+    p.add_argument('--content-id', help='required with another --title-id')
     args = p.parse_args()
+    title = args.title_id
+    if not re.fullmatch(r'PPSA[0-9]{5}', title):
+        raise SystemExit('Invalid PS5 title ID')
+    if (title != TITLE) != bool(args.content_id):
+        raise SystemExit('--content-id goes with a title ID other than '+TITLE)
     if args.zip and args.game:
         raise SystemExit('--zip is for the app without game files')
     lock = json.loads((ROOT/'port/ps5/dependencies.json').read_text())
@@ -50,7 +60,7 @@ def main():
     sdk = ROOT/'build/deps/PS5_Vulkan/.deps/native/ps5-payload-sdk'
     work = ROOT/'build/ps5'/('game-package' if game else 'app-package')
     work.mkdir(parents=True, exist_ok=True)
-    app = work/TITLE
+    app = work/title
     if app.is_symlink():
         raise SystemExit('Staging directory must not be a symlink')
     app.mkdir(exist_ok=True)
@@ -62,6 +72,8 @@ def main():
     if exports:
         raise SystemExit('Application exports are unsupported: '+repr(exports[:5]))
     imports = re.findall(r'\bUND[ \t]+(\S+)', dynamic)
+    if b'/data/reSOT/'+title.encode()+b'\0' not in (linked/'llvm-pie.elf').read_bytes():
+        raise SystemExit('The linked build has another data folder: rebuild with -DRESOT_PS5_TITLE_ID='+title)
     b.run([native, 'link', '--in', linked/'llvm-pie.elf', '--out', linked/'eboot.elf',
            '--stub-dir', sdk/'target/lib', '--stub', linked/'stubs/libSceAgc.so',
            '--stub', linked/'stubs/libSceAgcDriver.so', '--module-sdk', '0x02000009',
@@ -87,8 +99,15 @@ def main():
         raise SystemExit('port/ps5/sce_sys/param.json must name '+TITLE+' and contentVersion '+content_version)
     if not re.fullmatch(r'[A-Z]{2}[0-9]{4}-PPSA[0-9]{5}_00-[A-Z0-9]{16}', param['contentId']):
         raise SystemExit('Invalid PS5 contentId')
-    for name in ['param.json', 'icon0.png']:
-        shutil.copyfile(ROOT/'port/ps5/sce_sys'/name, sysdir/name)
+    if args.content_id:
+        if not re.fullmatch(r'[A-Z]{2}[0-9]{4}-'+title+r'_00-[A-Z0-9]{16}', args.content_id):
+            raise SystemExit('Invalid PS5 contentId for '+title)
+        param.update(titleId=title, contentId=args.content_id)
+        (sysdir/'param.json').unlink(missing_ok=True)
+        (sysdir/'param.json').write_text(json.dumps(param, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
+    else:
+        shutil.copyfile(ROOT/'port/ps5/sce_sys/param.json', sysdir/'param.json')
+    shutil.copyfile(ROOT/'port/ps5/sce_sys/icon0.png', sysdir/'icon0.png')
     # Keep the complete extracted disc. Hard links avoid another multi-GB
     # copy; no source file is modified. Button prompts are redrawn at run time
     # (port/ps5/src/buttons_ps5.c), so prince.bf is staged as it is.
@@ -133,18 +152,18 @@ def main():
             dest=notices/'PS5-platform'/src.relative_to(platform)
             dest.parent.mkdir(parents=True,exist_ok=True)
             shutil.copyfile(src,dest)
-    (app/'README.txt').write_text(f'reSOT PS5 native retail build, PPSA99023, upstream {release}.\n'
+    (app/'README.txt').write_text(f'reSOT PS5 native retail build, {title}, upstream {release}.\n'
         + ('' if game else 'No game files are included. Copy all files of your own Xbox retail disc to\n'
            '/data/reSOT/xbox-retail/ (or /mnt/usbN/reSOT/xbox-retail/, /mnt/extN/reSOT/xbox-retail/).\n') +
         f'Upstream commit: {upstream}. PS5 content version: {content_version}.\n'
         'Tested on FW 13.40, kstuff-lite 1.11, ShadowMountPlus 1.7-beta5fix1.\n'
-        'Saves/options/logs: /data/reSOT/PPSA99023/\n'
+        f'Saves/options/logs: /data/reSOT/{title}/\n'
         'Logs: logs/xbox-retail-err.txt and xbox-retail-out.txt. Previous run: .previous.\n'
         'Cross/Circle/Square/Triangle: A/B/X/Y. R1/L1: Black/White. L2/R2: triggers.\n'
         'Options: Start. Touchpad click: Back. Native game menu includes reSOT options.\n'
         'Output: 1920x1080, 16:9; guest internal resolution configurable in game.\n')
     inventory = b.inventory(app)
-    receipt = {'title_id': TITLE, 'source': source, 'console_tested': False,
+    receipt = {'title_id': title, 'source': source, 'console_tested': False,
                'upstream_commit': upstream, 'upstream_release': release, 'content_version': content_version,
                'game_linked': True, 'game_renderer_linked': True, 'fself_integrity': 'valid',
                'runtime_libc_integrity': 'valid', 'imports': imports, 'import_count': len(imports),
@@ -155,7 +174,7 @@ def main():
                'radv_provenance': (ROOT/'build/deps/PS5_Vulkan/.deps/native/radv-release/PROVENANCE.txt').read_text(),
                'files': inventory}
     if args.pack_python:
-        destination = ROOT/'bin/ps5/reSOT-PS5-PPSA99023.ffpfsc'
+        destination = ROOT/f'bin/ps5/reSOT-PS5-{title}.ffpfsc'
         destination.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix='resot-game-', dir=destination.parent) as temp:
             temp = Path(temp)
@@ -178,11 +197,11 @@ def main():
     if args.zip:
         # The homebrew catalog's artifact: the app folder at the top of the
         # archive, entries sorted and dated 1980 so a rebuild is byte-identical.
-        archive = ROOT/f'bin/ps5/{TITLE}-{content_version}.zip'
+        archive = ROOT/f'bin/ps5/{title}-{content_version}.zip'
         archive.parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(archive.with_suffix('.tmp'), 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as z:
             for path in sorted(p for p in app.rglob('*') if p.is_file() and p.name.lower() != '.ds_store'):
-                info = zipfile.ZipInfo(f'{TITLE}/'+path.relative_to(app).as_posix(), (1980, 1, 1, 0, 0, 0))
+                info = zipfile.ZipInfo(f'{title}/'+path.relative_to(app).as_posix(), (1980, 1, 1, 0, 0, 0))
                 info.external_attr = 0o644 << 16
                 z.writestr(info, path.read_bytes(), zipfile.ZIP_DEFLATED, 9)
         os.replace(archive.with_suffix('.tmp'), archive)

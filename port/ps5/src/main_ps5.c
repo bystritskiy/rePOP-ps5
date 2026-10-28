@@ -40,11 +40,15 @@ extern int sceKernelDebugOutText(int,const char *);
 extern void resot_ps5_input_shutdown(void);
 extern int sceKernelSendNotificationRequest(int,void *,size_t,int);
 static char game_dir[1024]="/app0/game";
-static const char *data_dir="/data/reSOT/PPSA99023";
+#ifndef RESOT_PS5_TITLE_ID
+#define RESOT_PS5_TITLE_ID "PPSA99023"
+#endif
+/* One folder per title ID, so apps with different IDs keep their own. */
+static const char *data_dir="/data/reSOT/" RESOT_PS5_TITLE_ID;
 static _Atomic int running;
 static _Atomic int result=1;
 const char *resot_ps5_data_dir(void) { return data_dir; }
-static char crash_path[1100]="/data/reSOT/PPSA99023/logs/crash.txt";
+static char crash_path[1100]="/data/reSOT/" RESOT_PS5_TITLE_ID "/logs/crash.txt";
 const char *resot_ps5_crash_path(void) { return crash_path; }
 static void defaults(const char *key,const char *value) { if(!getenv(key))setenv(key,value,1); }
 /* Nothing on the console reads a title's standard error; boot messages also
