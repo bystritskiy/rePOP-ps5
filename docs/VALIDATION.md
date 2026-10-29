@@ -1,5 +1,31 @@
 # Validation log
 
+## PS5 port, 2026-10-28: fPKG installs exit at boot (FW 9.40, 11.20)
+
+Reported by players with an fPKG of the Russian image (PPSA99024) built by
+PS5 UltraPack from the published `.ffpfsc`: FW 9.40 on a PS5 Pro (klog sent
+by the player) and FW 11.20 (a report, no log). klog:
+`[BOOT] code copy for MMIO decoding: module 0 (0), segment
+0x400000+0x2120000, file offset 0, 0 bytes: FAILED`, then `fault handler
+installation failed`, `title returned, status=1` and `eboot.bin calls exit()
+exit_value=1`. The module table was read; the SELF in `/app0/eboot.bin` was
+not recognised.
+
+`eboot.bin` taken out of that fPKG (UltraPack's `fpkg.extract_members`) and
+compared with the one `package-ps5-game.py` staged: 52,684,661 bytes against
+52,684,653; the first four bytes are the PS5 SELF magic `EEF51454` instead
+of ps5-native-tool's `4F153D1D`, the header and all 12 entries are the same,
+the differing bytes after them lie past the last segment, and segment 0
+(offset 0x11370, 0x211c950 bytes) has the same SHA-256 in both. UltraPack's
+validator reports `eboot.magic SCE fake-self (0xEEF51454)`.
+
+`mmio_ps5.c` now takes either magic and logs whether `eboot.bin` opened and
+its magic. Run on the Mac: the lookup replayed in Python on both files
+finds the same segment; `python3 tools/test-ps5.py`: pass; `cmake --build
+build/ps5/game-xbox-retail` and `tools/link-ps5-game.sh xbox-retail`:
+compile and link. Not checked: an fPKG with this build on any console;
+whether 9.40 or 11.20 then get past boot.
+
 ## PS5 port, 2026-10-28: upstream v0.4.0 merged (01.004.000)
 
 `reSOTv0.4.0` (`828ebf3`) merged into `reSOT-ps5`. Conflicts: the fork's

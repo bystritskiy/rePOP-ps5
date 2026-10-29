@@ -115,7 +115,10 @@ static void fault_handler(int sig, siginfo_t *info, void *context)
  * 0, stored plain (neither encrypted nor compressed); it matched eboot.elf's
  * text byte for byte. The kernel's module table places it (the segments klog
  * prints, xotext at 0x400000); the linker script is RADV's, without symbols
- * of ours. */
+ * of ours. ps5-native-tool writes the PS4 FSELF magic 0x1D3D154F; fPKG
+ * builders (PS5 UltraPack) rewrite it to the PS5 magic 0xEEF51454 and keep
+ * the header and segment table as they are (compared on the 01.004.000
+ * package). */
 typedef struct { uint64_t address; uint32_t size; int32_t prot; } module_segment;
 typedef struct { uint64_t size; char name[256]; module_segment segments[4];
                  uint32_t count; uint8_t fingerprint[20]; } module_info;
@@ -144,7 +147,9 @@ static int load_code_copy(void)
              uint16_t header, meta; uint64_t file; uint16_t entries, flags; uint32_t pad; } header;
     struct { uint64_t properties, offset, file, memory; } entry;
     uint64_t offset = 0, size = 0;
-    if (fd >= 0 && pread(fd, &header, sizeof header, 0) == sizeof header && header.magic == 0x1d3d154fu)
+    header.magic = 0;
+    if (fd >= 0 && pread(fd, &header, sizeof header, 0) == sizeof header &&
+        (header.magic == 0x1d3d154fu || header.magic == 0xeef51454u))
         for (unsigned i = 0; i < header.entries; i++) {
             if (pread(fd, &entry, sizeof entry, 0x20 + 0x20 * (off_t)i) != sizeof entry) break;
             /* bits 20+: segment index; bit 1: encrypted; bit 3: compressed.
@@ -164,8 +169,9 @@ static int load_code_copy(void)
     if (fd >= 0) close(fd);
     char line[256];
     snprintf(line, sizeof line, "[reSOT] [BOOT] code copy for MMIO decoding: module %#x (%#x), segment %#llx+%#llx, "
-             "file offset %#llx, %llu bytes: %s\n", (unsigned)handle, (unsigned)rc, (unsigned long long)start,
-             (unsigned long long)limit, (unsigned long long)offset, (unsigned long long)size, copy ? "loaded" : "FAILED");
+             "eboot.bin %s magic %#x, file offset %#llx, %llu bytes: %s\n", (unsigned)handle, (unsigned)rc,
+             (unsigned long long)start, (unsigned long long)limit, fd >= 0 ? "opened" : "not opened",
+             (unsigned)header.magic, (unsigned long long)offset, (unsigned long long)size, copy ? "loaded" : "FAILED");
     sceKernelDebugOutText(0, line);
     fputs(line + 8, stderr);
     code_start = start; code_end = start + size; code_copy = copy;
