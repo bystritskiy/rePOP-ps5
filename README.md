@@ -38,7 +38,7 @@ at 1440p (3x) internal resolution.</sub></p>
 
 ## Status
 
-Version **01.004.000**, based on upstream reSOT v0.4.0. Tested on one
+Version **01.004.001**, based on upstream reSOT v0.4.0. Tested on one
 console: FW 13.40, kstuff-lite 1.11, ShadowMountPlus 1.7-beta5fix1.
 
 Upstream v0.4.0 brings Special Load Map and a built-in cheats switch in reSOT
