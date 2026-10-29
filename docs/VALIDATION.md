@@ -1,5 +1,19 @@
 # Validation log
 
+## PS5 port, 2026-10-29: 01.004.001 on the console
+
+`package-ps5-game.py --zip` from `ce8948a`: `bin/ps5/PPSA99023-01.004.001.zip`,
+17,505,932 bytes, SHA-256 `5188e6ff44e78a2339adadb6fe7e6b9acdf907de8df38782cc598348dafd3af9`,
+published as release 01.004.001. Its folder was copied to
+`/data/homebrew/PPSA99023` (the five LOAD segments of the installed
+`eboot.bin` equal the linked ELF's) and opened with `tools/ps5-app.py
+launch`, the disc files in `/data/reSOT/xbox-retail`. Log: `code copy for
+MMIO decoding: ... eboot.bin opened magic 0x1d3d154f, file offset 0x11370,
+34719312 bytes: loaded`, `entering xbox-retail`, VideoOut's 3840x2160
+buffers registered, then 29.9 fps at 235 draws a frame. The missing-files
+screen is the one recorded below. Not checked: an fPKG of this build (the
+PS5 magic branch), play beyond the start.
+
 ## PS5 port, 2026-10-29: the missing-files screen, first shown
 
 A RecompStore player who set the disc up through the store reported "Game
