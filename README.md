@@ -68,8 +68,8 @@ movies are scaled up with a bicubic filter; the full-screen cutscenes have
 not been seen on the console yet.
 
 Not checked yet: sound, controller input through a whole level, rumble,
-saves, later levels, the screen shown when no game is found, game files on
-USB or extended storage, other firmware and loaders, and the Xbox demo.
+saves, later levels, game files on USB or extended storage, other firmware
+and loaders, and the Xbox demo.
 What was run and seen is recorded in [docs/VALIDATION.md](docs/VALIDATION.md).
 
 ## Install

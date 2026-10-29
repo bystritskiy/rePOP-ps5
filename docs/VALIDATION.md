@@ -1,5 +1,38 @@
 # Validation log
 
+## PS5 port, 2026-10-29: the missing-files screen, first shown
+
+A RecompStore player who set the disc up through the store reported "Game
+files not found" and then a black screen. On the console, with
+`/data/reSOT` moved away and 01.004.000 installed from RecompStore, the app
+showed the notification over a black screen; the log ended with `game
+folder refused: /data/reSOT/xbox-retail: no default.xbe` and `no game
+files; missing-files screen 0x80290001`. The screen had never been seen
+before: its one 8 MiB linear buffer (R8G8B8A8 sRGB, memory type 3) is
+smaller than a tiled 1920x1080 frame (8,847,360 bytes), and the pixels
+were stored row by row.
+
+`video_ps5.c` now draws the rows, stores them in 64 KiB tiles of 128x128
+pixels (PS5_Vulkan `tiled_byte_offset`) and registers the buffers as
+PS5_Mesa's VideoOut WSI does in this app: B8G8R8A8 SDR, CPU direct memory
+(type 12), five 10 MiB buffers; each failing call is logged. Seen on the
+console: one buffer was refused, `text screen: sceVideoOutRegisterBuffers2
+0x80290001`, also with the Mesa format and memory type; five were taken
+(`missing-files screen 0`). The screen showed every line, in its colours and
+unscrambled, including `Folders found but not used: /data/reSOT/xbox-retail:
+no default.xbe`. Cross closed the app (`[SESSION] closed from the
+missing-files screen`, the process gone, SceShellCore and SceShellUI on the
+same PIDs).
+
+Host test (stubbed Sony calls, x86-64, ASan/UBSan): every pixel of the
+frame lands once inside the first buffer, equal to the row drawing, bytes
+B, G, R, A. `python3 tools/test-ps5.py`: pass. `tools/ps5-app.py` closed
+and opened the app for these runs. Not checked: the player's own failure
+(their log shows the store copied all 171 files into
+`/data/reSOT/xbox-retail` and opened the app; their reason for refusing the
+folder is not in what RecompStore sends), the screen on another firmware or
+a 1080p or 1440p display.
+
 ## PS5 port, 2026-10-28: fPKG installs exit at boot (FW 9.40, 11.20)
 
 Reported by players with an fPKG of the Russian image (PPSA99024) built by

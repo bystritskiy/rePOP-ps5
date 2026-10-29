@@ -138,6 +138,18 @@ it, and sends `sce_sys/param.json` last. Remote files that are not in the
 staging folder are listed, not deleted. Do not keep an image with the same
 title ID in `/data/homebrew` at the same time.
 
+To close and open the app without the controller:
+
+```sh
+python3 -I tools/ps5-app.py restart --addr <console address>
+```
+
+`kill` ends the running title through Payload Manager (port 8084), `launch`
+opens it through RecompStore's own launcher payload (the job in
+`/data/recompstore/launch/`, the console's `recompstore-launcher.elf` to the
+payload loader on port 9021), `status` lists title processes. Needs Payload
+Manager, a payload loader on 9021 and RecompStore on the console.
+
 **Image.** Put `reSOT-PS5-PPSA99023.ffpfsc` in the image folder
 ShadowMountPlus scans. This path has not been tried on a console yet.
 
