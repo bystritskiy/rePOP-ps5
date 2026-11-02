@@ -17,8 +17,12 @@ installed as a folder, reached the
 title screen, the main menu, the profile name keyboard, the palace balcony
 cutscene and the first gameplay frames, with correct lighting, fog and
 textures, at about 60 fps. Button prompts show PlayStation buttons. The app
-found the disc files in `/data/reSOT/xbox-retail`. **Not checked yet:**
-sound, controller input in play, saves, levels past the first
+found the disc files in `/data/reSOT/xbox-retail`. The 29.9 fps in the
+01.004.001 log was its first five-second window, which contained the menu and
+level start; on 2026-11-02 the game logged 59.9-60.0 fps in play, and the cold
+pipeline waits behind that first window are now bounded (the `[PERF PS5]`
+frame diagnostics and the DXT upload are described below). **Not checked
+yet:** sound, controller input in play, saves, levels past the first
 frames, the demo target on a console. Details: `docs/VALIDATION.md`.
 
 Tested environment: **FW 13.40, kstuff-lite 1.11, ShadowMountPlus
@@ -206,6 +210,14 @@ controller drawing on the controls screen are still the originals.
   internal resolution. Before 01.004.000 a new install got 1440p (3x) and
   the Standard preset: with no `GraphicsPreset` in the INI the preset follows
   the texture glow default, which the PS5 now sets.
+- A guest draw waits at most 4 ms per frame for a cold driver pipeline, then
+  is deferred to the next frame while the background compiler finishes it;
+  this replaced the 657-875 ms stalls in the 01.004.001 log. Xbox DXT1/3/5
+  textures are uploaded as BC1/BC2/BC3 block data (the row-major block layout
+  the guest stores) instead of being decoded to BGRA on the CPU, which
+  halved the first level's texture-upload time. `[PERF PS5]` lines in the log
+  name every frame over 17 ms with its present, draw, pipeline and texture
+  cost, and a five-second summary counts the outliers.
 - Movies (the NV2A video overlay) are drawn with a bicubic Catmull-Rom
   shader (`ps_movie`). A full-width movie leaves the 4:3 frame: it fills the
   16:9 picture when that crops no more than 6% of it (the 640x346 story

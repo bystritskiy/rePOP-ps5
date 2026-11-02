@@ -75,14 +75,33 @@ static float resot_hd_cubic(float a, float b, float c, float d, float t)
     return b + 0.5f*t*(c - a + t*(2.0f*a - 5.0f*b + 4.0f*c - d + t*(3.0f*(b - c) + d - a)));
 }
 
+/* RE-SoT (PS5): the enlarged sheet is rebuilt for every upload (39 ms in the
+ * console log, once at startup and again when the pause menu first decodes
+ * it). Keep one copy by source hash; a caller still receives its own buffer
+ * to free. Other hosts keep the old path until checked on their hardware. */
+#if defined(RESOT_PS5_GPU)
+static uint32_t s_hd_cache[RESOT_HD_FONT_W * RESOT_HD_FONT_H];
+static uint32_t s_hd_cache_hash;
+#endif
+
 /* The sheet enlarged RESOT_HD_FONT_SCALE times, 0xAARRGGBB; the caller frees it. */
 static uint32_t *resot_hd_font_pixels(const uint32_t *px)
 {
     const uint32_t sw = RESOT_HD_SHEET_W, sh = RESOT_HD_SHEET_H;
     const uint32_t ow = RESOT_HD_FONT_W, oh = RESOT_HD_FONT_H;
-    float *pm = (float *)malloc((size_t)sw * sh * 4 * sizeof(float));
-    uint32_t *out = (uint32_t *)malloc((size_t)ow * oh * 4);
+    uint32_t hash = resot_hd_font_hash(px, sw, sh);
+    float *pm;
+    uint32_t *out;
     uint32_t x, y, c;
+#if defined(RESOT_PS5_GPU)
+    if (s_hd_cache_hash == hash) {
+        out = (uint32_t *)malloc(sizeof s_hd_cache);
+        if (out) memcpy(out, s_hd_cache, sizeof s_hd_cache);
+        return out;
+    }
+#endif
+    pm = (float *)malloc((size_t)sw * sh * 4 * sizeof(float));
+    out = (uint32_t *)malloc((size_t)ow * oh * 4);
     if (!pm || !out) { free(pm); free(out); return NULL; }
     for (y = 0; y < sh; y++) for (x = 0; x < sw; x++) {       /* premultiplied, 0..1 */
         uint32_t p = px[(size_t)y*sw + x];
@@ -137,6 +156,10 @@ static uint32_t *resot_hd_font_pixels(const uint32_t *px)
         }
     }
     free(pm);
+#if defined(RESOT_PS5_GPU)
+    memcpy(s_hd_cache, out, sizeof s_hd_cache);
+    s_hd_cache_hash = hash;
+#endif
     return out;
 }
 #endif

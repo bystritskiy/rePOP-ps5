@@ -50,6 +50,7 @@ typedef struct {
     Texture guest;
     uint32_t hash, checked, used;
     int hd; /* RE-SoT: the HD menu font in place of the guest sheet (resot_hd_font.h). */
+    int bc; /* RE-SoT (PS5): the guest DXT format uploaded as a block texture, 0 for BGRA. */
 } NgTexture;
 /* RE-SoT: stable, collision-checked program entries. Workers only read the
  * immutable source/key; shader publication is protected by each entry's lock.
@@ -142,6 +143,7 @@ static struct {
     uint64_t reference_draws; /* RE-SoT: reference draws while translation pipelines compile. */
     uint64_t rejected_draws; /* RE-SoT: draws skipped because the driver rejected every program. */
     uint64_t pipeline_waits, pipeline_wait_ticks; /* RE-SoT: measure cold stalls while preserving geometry. */
+    uint64_t pipeline_skips; /* RE-SoT (PS5): draws deferred to the next frame instead of stalling this one. */
     uint64_t flare_depth_draws; /* RE-SoT: observe the retail light-halo correction separately from queries. */
     uint32_t spec_ps_count;
     uint64_t spec_ps_draws; /* RE-SoT: measure specialization coverage. */
@@ -197,6 +199,36 @@ static struct {
     int texture_probe; /* RE-SoT: automatic Adreno 640 diagnostic, bounded per format. */
     uint8_t texture_probe_formats[256],texture_probe_count;
 } s_ng;
+#if defined(RESOT_PS5_GPU)
+/* RE-SoT (PS5): per-frame outliers, so "not 60" has a cause instead of an
+ * average. The five-second report already gives fps and mean costs; this
+ * records the frames that miss the 16.67 ms budget and what they spent it on:
+ * swapchain/vsync wait, draw encoding, cold pipeline compiles and texture
+ * uploads. Only outliers are printed, with a per-window cap. */
+static struct {
+    uint64_t last_flip;       /* performance counter at the previous flip */
+    uint64_t last_present;    /* s_hw.present_ticks then */
+    uint64_t last_pipe;       /* s_ng.pipeline_wait_ticks then */
+    uint64_t last_pipe_count; /* s_ng.pipeline_waits then */
+    uint64_t last_skip;       /* s_ng.pipeline_skips then */
+    uint64_t last_draw;       /* s_hw_stat_draw_ticks then */
+    uint64_t last_verts;      /* s_hw_stat_verts then */
+    uint64_t tex_ticks;       /* texture decode+upload, this frame */
+    uint64_t tex_bytes;
+    uint32_t tex_count;
+    uint32_t over17, over25, over33, over50; /* this report window */
+    uint64_t summary_skip;    /* s_ng.pipeline_skips at the last summary */
+    uint32_t logged;          /* outlier lines in this report window */
+    uint32_t worst_frame;
+    double worst_ms;
+} s_ps5_perf;
+/* RE-SoT (PS5): a frame may spend at most this long waiting for a cold
+ * pipeline before the guest draw is deferred to the next frame. The driver
+ * compile still finishes in the background; only the draw waits. Measured
+ * cold waits were 657, 875 and 62-66 ms, each one a visible freeze. */
+#define RESOT_PS5_PIPELINE_BUDGET_US 4000u
+static uint32_t s_ps5_pipeline_budget_us = RESOT_PS5_PIPELINE_BUDGET_US;
+#endif
 /* RE-SoT: pipeline compiler threads. On Adreno a new pipeline with the
  * NV2A combiner shader took 0.15-1.8 s inside vkCreateGraphicsPipelines;
  * eight new state combinations on entering an area froze one retail run for
@@ -382,6 +414,81 @@ static void ng_upload_cycle(SDL_GPUTexture *image, const uint32_t *pixels,
     if (mips) SDL_GenerateMipmapsForGPUTexture(ng_cmd(), image);
     s_hw.tex_uploads++;
 }
+#if defined(RESOT_PS5_GPU)
+/* RE-SoT (PS5): Xbox DXT images are stored as row-major 4x4 blocks (see
+ * sample_tex), the same block order BC1/BC2/BC3 use. Uploading them directly
+ * skips the scalar decode to BGRA and cuts the transfer to one quarter or one
+ * eighth; the first-level load's 56 uploads went from 31.9 ms to 13.4 ms. */
+static int ng_dxt_format(uint32_t fmt, SDL_GPUTextureFormat *out, uint32_t *block)
+{
+    static int8_t supported[3] = {-1, -1, -1};
+    int n;
+    switch (fmt) {
+    case 0x0C: *out = SDL_GPU_TEXTUREFORMAT_BC1_RGBA_UNORM; *block = 8; n = 0; break;
+    case 0x0E: *out = SDL_GPU_TEXTUREFORMAT_BC2_RGBA_UNORM; *block = 16; n = 1; break;
+    case 0x0F: *out = SDL_GPU_TEXTUREFORMAT_BC3_RGBA_UNORM; *block = 16; n = 2; break;
+    default: return 0;
+    }
+    if (supported[n] < 0)
+        supported[n] = SDL_GPUTextureSupportsFormat(s_ng.device, *out,
+            SDL_GPU_TEXTURETYPE_2D, SDL_GPU_TEXTUREUSAGE_SAMPLER) ? 1 : 0;
+    return supported[n];
+}
+static uint32_t ng_upload_dxt(SDL_GPUTexture *image, const Texture *t,
+                          uint32_t w, uint32_t h, uint32_t levels,
+                          uint32_t block, int cycle)
+{
+    const uint8_t *src = (const uint8_t *)xbox_GetMemoryOffset() + t->offset;
+    SDL_GPUTransferBufferCreateInfo ci = {SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, 0, 0};
+    SDL_GPUTransferBuffer *transfer;
+    SDL_GPUCopyPass *copy;
+    uint32_t lv, lw, lh, off = 0, total = 0;
+    uint8_t *mapped;
+    for (lv = 0; lv < levels; lv++) {
+        lw = (w >> lv) ? (w >> lv) : 1;
+        lh = (h >> lv) ? (h >> lv) : 1;
+        total += ((lw + 3) / 4) * ((lh + 3) / 4) * block;
+    }
+    if (!total) return 0;
+    ci.size = total;
+    if (!s_ng.texture_transfer || s_ng.texture_transfer_size < total) {
+        transfer = SDL_CreateGPUTransferBuffer(s_ng.device, &ci);
+        if (!transfer) ng_fail("dxt transfer buffer");
+        if (s_ng.texture_transfer)
+            SDL_ReleaseGPUTransferBuffer(s_ng.device, s_ng.texture_transfer);
+        s_ng.texture_transfer = transfer;
+        s_ng.texture_transfer_size = total;
+    }
+    transfer = s_ng.texture_transfer;
+    mapped = SDL_MapGPUTransferBuffer(s_ng.device, transfer, true);
+    if (!mapped) ng_fail("map dxt transfer");
+    memcpy(mapped, src, total);
+    SDL_UnmapGPUTransferBuffer(s_ng.device, transfer);
+    copy = SDL_BeginGPUCopyPass(ng_cmd());
+    for (lv = 0; lv < levels; lv++) {
+        SDL_GPUTextureTransferInfo s = {0};
+        SDL_GPUTextureRegion d = {0};
+        lw = (w >> lv) ? (w >> lv) : 1;
+        lh = (h >> lv) ? (h >> lv) : 1;
+        s.transfer_buffer = transfer;
+        s.offset = off;
+        /* Tightly packed block rows; a 1x1 or 2x2 mip is not a multiple of
+         * the 4-texel block width, so let Vulkan derive the row length. */
+        s.pixels_per_row = 0;
+        s.rows_per_layer = 0;
+        d.texture = image;
+        d.mip_level = lv;
+        d.w = lw;
+        d.h = lh;
+        d.d = 1;
+        SDL_UploadToGPUTexture(copy, &s, &d, cycle && lv == 0);
+        off += ((lw + 3) / 4) * ((lh + 3) / 4) * block;
+    }
+    SDL_EndGPUCopyPass(copy);
+    s_hw.tex_uploads++;
+    return total;
+}
+#endif
 static SDL_GPUShader *ng_shader(const unsigned char *dxil, size_t dxil_size,
                                 const unsigned char *spirv, size_t spirv_size,
                                 const char *entry, int vertex, uint32_t samplers, uint32_t uniforms)
@@ -674,6 +781,10 @@ static int ng_init(const char *backend)
         SDL_GetStringProperty(SDL_GetGPUDeviceProperties(s_ng.device), SDL_PROP_GPU_DEVICE_NAME_STRING,""),s_ng_compat);
     fprintf(stderr,"[HW native] cold pipeline policy: %s\n",s_ng_compact_pipelines ?
         "wait for compact shaders (mobile); no duplicate reference compilation" : "reference fallback");
+#if defined(RESOT_PS5_GPU)
+    fprintf(stderr,"[HW native] cold pipeline budget: %u ms per frame, then defer the guest draw\n",
+        RESOT_PS5_PIPELINE_BUDGET_US / 1000u);
+#endif
     {
         const char *probe=getenv("RESOT_TEXTURE_PROBE");
         /* RE-SoT: handset fix confirmed; keep startup readbacks opt-in for diagnostics. */
@@ -915,6 +1026,9 @@ static SDL_GPUTexture *ng_texture(int stage, NgSurface *target)
     NgTexture *c = NULL, *victim = NULL;
     uint32_t i, slot, hash, layers, face, *px, levels = 1, w, h;
     int reuse_image = 0; /* RE-SoT: SDL cycling preserves earlier sampled versions. */
+#if defined(RESOT_PS5_GPU)
+    uint64_t ps5_tex_start = 0; /* RE-SoT (PS5): decode+upload cost of a new texture. */
+#endif
     if (!t->valid || !t->width || !t->height || t->width > 4096 || t->height > 4096) return NULL;
     for (i = 0; !t->cube && i < HW_MAX_SURFACES; i++) {
         NgSurface *s = &s_ng.surfaces[i];
@@ -939,6 +1053,9 @@ static SDL_GPUTexture *ng_texture(int stage, NgSurface *target)
     if (c && c->checked == s_hw.frame) { c->used = s_hw.frame; return c->image; }
     hash = hw_tex_hash(t);
     if (c && c->hash == hash) { c->checked = c->used = s_hw.frame; return c->image; }
+#if defined(RESOT_PS5_GPU)
+    ps5_tex_start = SDL_GetPerformanceCounter();
+#endif
 #if RESOT_RUNTIME_RETAIL || RESOT_RUNTIME_DEMO
     /* RE-SoT: content changes do not require a new 2D resource. Flush its
      * readers, then cycle storage on upload; SDL retires the old backing
@@ -952,6 +1069,53 @@ static SDL_GPUTexture *ng_texture(int stage, NgSurface *target)
     /* RE-SoT: flush readers before cycling or recreating. SDL retires the
      * old backing image after its last encoded GPU use. */
     if (c->image) ng_flush_draws(); /* RE-SoT: retire a sampled version only after encoding its draws. */
+#if defined(RESOT_PS5_GPU)
+    /* RE-SoT (PS5): DXT block pass-through. Level 0 and every guest mip are
+     * uploaded as BC1/BC2/BC3; no CPU texel decode and no GPU mip chain. */
+    {
+        SDL_GPUTextureFormat bc_format;
+        uint32_t bc_block;
+        if (!t->cube && !(t->width & 3) && !(t->height & 3)
+            && ng_dxt_format(t->color, &bc_format, &bc_block)) {
+            uint32_t count = t->levels ? t->levels : 1;
+            uint32_t full = 1, extent = t->width > t->height ? t->width : t->height;
+            uint32_t uploaded;
+            uint64_t end;
+            double ms;
+            while (extent > 1) { extent >>= 1; full++; }
+            if (count > full) count = full;
+            if (c->image && c->bc != (int)t->color) {
+                SDL_ReleaseGPUTexture(s_ng.device, c->image);
+                c->image = NULL;
+                reuse_image = 0;
+            } else if (c->image && !reuse_image) {
+                /* A recycled cache slot with the same block format: cycle its
+                 * storage instead of overwriting an image the GPU may read. */
+                reuse_image = 1;
+            }
+            if (!c->image)
+                c->image = ng_image(t->width, t->height, 0, count,
+                    SDL_GPU_TEXTUREUSAGE_SAMPLER, bc_format);
+            uploaded = ng_upload_dxt(c->image, t, t->width, t->height, count,
+                                     bc_block, reuse_image);
+            c->bc = (int)t->color;
+            c->hd = 0;
+            c->guest = *t; c->hash = hash; c->checked = c->used = s_hw.frame;
+            end = SDL_GetPerformanceCounter();
+            s_ps5_perf.tex_ticks += end - ps5_tex_start;
+            s_ps5_perf.tex_bytes += uploaded;
+            s_ps5_perf.tex_count++;
+            ms = (double)(end - ps5_tex_start) * 1000.0
+               / (double)SDL_GetPerformanceFrequency();
+            if (ms >= 4.0)
+                fprintf(stderr, "[PERF PS5] texture %ux%u fmt %02X (BC%u) levels %u: %.1f ms\n",
+                        t->width, t->height, t->color,
+                        t->color == 0x0C ? 1u : t->color == 0x0E ? 2u : 3u,
+                        count, ms);
+            return c->image;
+        }
+    }
+#endif
     layers = t->cube ? 6 : 1;
     px = (uint32_t *)malloc((size_t)t->width*t->height*layers*4);
     if (!px) ng_fail("decode texture allocation");
@@ -1031,6 +1195,18 @@ static SDL_GPUTexture *ng_texture(int stage, NgSurface *target)
         fflush(stderr);
     } /* RE-SoT: checks only; no texture/fence error is hidden or substituted. */
     free(px); c->guest = *t; c->hash = hash; c->checked = c->used = s_hw.frame;
+#if defined(RESOT_PS5_GPU)
+    if (ps5_tex_start) {
+        uint64_t end = SDL_GetPerformanceCounter();
+        double ms = (double)(end - ps5_tex_start) * 1000.0 / (double)SDL_GetPerformanceFrequency();
+        s_ps5_perf.tex_ticks += end - ps5_tex_start;
+        s_ps5_perf.tex_bytes += (uint64_t)w * h * layers * 4;
+        s_ps5_perf.tex_count++;
+        if (ms >= 4.0)
+            fprintf(stderr, "[PERF PS5] texture %ux%u x%u fmt %02X levels %u: %.1f ms\n",
+                    w, h, layers, t->color, levels, ms); /* RE-SoT: attribute upload stalls to a texture. */
+    }
+#endif
     return c->image;
 }
 static SDL_GPUSampler *ng_sampler(const Texture *t)
@@ -1252,8 +1428,10 @@ static void ng_compiler_stop(void)
 }
 
 /* RE-SoT: NULL while compiling lets the caller try the reference program.
- * Cold reference draws, blits and presentation wait instead of dropping work. */
-static SDL_GPUGraphicsPipeline *ng_pipeline(const NgPipelineKey *key, int may_defer)
+ * Cold reference draws, blits and presentation wait instead of dropping work.
+ * budget_wait is set only for guest draws: on PS5 those wait at most the
+ * frame's compile budget, then defer the draw to the next frame. */
+static SDL_GPUGraphicsPipeline *ng_pipeline(const NgPipelineKey *key, int may_defer, int budget_wait)
 {
     /* RE-SoT: inactive state cannot change pixels. Avoid duplicate PSOs from
      * stale guest registers during room transitions, on both native drivers. */
@@ -1305,6 +1483,31 @@ static SDL_GPUGraphicsPipeline *ng_pipeline(const NgPipelineKey *key, int may_de
          * take jobs. Recheck after locking to cover completion before wait. */
         SDL_LockMutex(s_ngc.lock);
         while (SDL_GetAtomicInt(&p->state) == NG_PSO_PENDING) {
+#if defined(RESOT_PS5_GPU)
+            if (budget_wait) {
+                /* RE-SoT (PS5): a cold driver compile of the big guest
+                 * program took 657-875 ms in the console log. Keep the frame
+                 * inside the 60 Hz budget; the compiler thread finishes the
+                 * pipeline and the guest draw is issued again next frame. */
+                Uint32 slice;
+                Uint64 t0;
+                double used_us;
+                if (!s_ps5_pipeline_budget_us) {
+                    s_ng.pipeline_skips++;
+                    SDL_UnlockMutex(s_ngc.lock);
+                    return NULL;
+                }
+                slice = (s_ps5_pipeline_budget_us + 999u) / 1000u;
+                if (slice > 4) slice = 4;
+                t0 = SDL_GetPerformanceCounter();
+                SDL_WaitConditionTimeout(s_ngc.cond, s_ngc.lock, (Sint32)slice);
+                used_us = (double)(SDL_GetPerformanceCounter() - t0) * 1000000.0
+                        / (double)SDL_GetPerformanceFrequency();
+                s_ps5_pipeline_budget_us = used_us >= (double)s_ps5_pipeline_budget_us
+                    ? 0 : s_ps5_pipeline_budget_us - (uint32_t)used_us;
+                continue;
+            }
+#endif
             /* RE-SoT: a bounded diagnostic wait retains every guest draw;
              * it never times out the pipeline or substitutes blank frames. */
             if(!SDL_WaitConditionTimeout(s_ngc.cond,s_ngc.lock,5000) &&
@@ -1408,11 +1611,11 @@ static void ng_flush_draws(void)
     ng_boot_stage(8,"first guest queue flush begin"); /* RE-SoT */
     for (i = 0; i < s_ng.queued_count; i++) {
         const NgPipelineKey *key = &s_ng.queued[i].key;
-        ready[i] = ng_pipeline(key,1);
+        ready[i] = ng_pipeline(key,1,0);
         if (!ready[i] && !s_ng_compact_pipelines && (key->translated_vs || key->specialized_ps)) {
             NgPipelineKey reference = *key;
             reference.translated_vs = NULL; reference.specialized_ps = NULL;
-            ready[i] = ng_pipeline(&reference,1);
+            ready[i] = ng_pipeline(&reference,1,0);
             reference_draw[i] = 1;
         }
     }
@@ -1424,16 +1627,26 @@ static void ng_flush_draws(void)
                 reference_draw[i] = (reference.translated_vs || reference.specialized_ps) != 0;
                 reference.translated_vs = NULL; reference.specialized_ps = NULL;
             } /* RE-SoT: Mali waits for the original compact key, preserving all draw state. */
-            ready[i] = ng_pipeline(&reference,0);
+            ready[i] = ng_pipeline(&reference,0,1);
             /* RE-SoT: the driver rejected the compact program; try the
              * reference one before giving the draw up (see ng_pipeline). */
             if (!ready[i] && (reference.translated_vs || reference.specialized_ps)) {
                 reference.translated_vs = NULL; reference.specialized_ps = NULL;
                 reference_draw[i] = 1;
-                ready[i] = ng_pipeline(&reference,0);
+                ready[i] = ng_pipeline(&reference,0,1);
             }
             s_ng.pipeline_wait_ticks += SDL_GetPerformanceCounter()-start;
             s_ng.pipeline_waits++;
+#if defined(RESOT_PS5_GPU)
+            {
+                double ms = (double)(SDL_GetPerformanceCounter()-start) * 1000.0
+                          / (double)SDL_GetPerformanceFrequency();
+                if (ms >= 2.0)
+                    fprintf(stderr, "[PERF PS5] cold pipeline %.1f ms shader=%u directVS=%u specializedPS=%u format=%u\n",
+                            ms, s_ng.queued[i].key.shader, s_ng.queued[i].key.translated_vs != NULL,
+                            s_ng.queued[i].key.specialized_ps != NULL, (unsigned)s_ng.queued[i].key.format);
+            }
+#endif
             if (!ready[i]) s_ng.rejected_draws++;
         }
     }
@@ -2004,7 +2217,7 @@ static void ng_blit(SDL_GPUTexture *target_image, SDL_GPUTextureFormat format,
     if (ng_sampler_budget(1)) ng_submit(); /* RE-SoT: D3D12 sampler-heap budget. */
     key.shader = shader; key.mask = mask; key.format = format;
     if (shader == 3) { key.blend = 1; key.src = 0x302; key.dst = 0x303; }
-    pipeline = ng_pipeline(&key,0);
+    pipeline = ng_pipeline(&key,0,0);
     if (!pipeline) ng_fail("create blit pipeline");
     target.texture = target_image; target.store_op = SDL_GPU_STOREOP_STORE;
     target.load_op = clear ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
@@ -2066,7 +2279,7 @@ static void ng_clear(uint32_t param)
             key.cmp = 0x207; key.clear_stencil = (param&2) != 0;
             ct.texture = s->color; ct.load_op = SDL_GPU_LOADOP_LOAD; ct.store_op = SDL_GPU_STOREOP_STORE;
             ds.load_op = ds.stencil_load_op = SDL_GPU_LOADOP_LOAD;
-            SDL_GPUGraphicsPipeline *pipeline = ng_pipeline(&key,0);
+            SDL_GPUGraphicsPipeline *pipeline = ng_pipeline(&key,0,0);
             if (!pipeline) ng_fail("create depth-clear pipeline");
             pass = SDL_BeginGPURenderPass(ng_cmd(),&ct,1,&ds);
             if (!pass) ng_fail("rectangle depth clear");
@@ -2328,9 +2541,64 @@ static void ng_present(int sync)
     s_hw.present_ticks += (uint64_t)(after.QuadPart-before.QuadPart);
     s_hw.pending_present = 0; s_hw.last_flip_ms = GetTickCount();
 }
+#if defined(RESOT_PS5_GPU)
+/* RE-SoT (PS5): called at each flip, before this frame's present, so the
+ * interval, present wait, draw encoding, pipeline waits and texture uploads
+ * all describe the frame that just ended. */
+static void ps5_frame_stats(void)
+{
+    static uint64_t freq;
+    uint64_t now = SDL_GetPerformanceCounter();
+    double ms, present_ms, pipe_ms, draw_ms, tex_ms;
+    uint64_t pipes, skips;
+    uint32_t verts;
+    if (!freq) freq = SDL_GetPerformanceFrequency();
+    s_ps5_pipeline_budget_us = RESOT_PS5_PIPELINE_BUDGET_US; /* next frame's compile budget */
+    if (!s_ps5_perf.last_flip) {
+        s_ps5_perf.last_flip = now;
+        s_ps5_perf.last_present = s_hw.present_ticks;
+        s_ps5_perf.last_pipe = s_ng.pipeline_wait_ticks; s_ps5_perf.last_pipe_count = s_ng.pipeline_waits;
+        s_ps5_perf.last_skip = s_ng.pipeline_skips;
+        s_ps5_perf.last_draw = s_hw_stat_draw_ticks; s_ps5_perf.last_verts = s_hw_stat_verts;
+        return;
+    }
+    ms = (double)(now - s_ps5_perf.last_flip) * 1000.0 / (double)freq;
+    present_ms = (double)(s_hw.present_ticks - s_ps5_perf.last_present) * 1000.0 / (double)freq;
+    pipe_ms = (double)(s_ng.pipeline_wait_ticks - s_ps5_perf.last_pipe) * 1000.0 / (double)freq;
+    pipes = s_ng.pipeline_waits - s_ps5_perf.last_pipe_count;
+    skips = s_ng.pipeline_skips - s_ps5_perf.last_skip;
+    draw_ms = (double)(s_hw_stat_draw_ticks - s_ps5_perf.last_draw) * 1000.0 / (double)freq;
+    tex_ms = (double)s_ps5_perf.tex_ticks * 1000.0 / (double)freq;
+    verts = (uint32_t)(s_hw_stat_verts - s_ps5_perf.last_verts);
+    if (ms >= 50.0) s_ps5_perf.over50++;
+    else if (ms >= 33.0) s_ps5_perf.over33++;
+    else if (ms >= 25.0) s_ps5_perf.over25++;
+    else if (ms >= 17.0) s_ps5_perf.over17++;
+    if (ms > s_ps5_perf.worst_ms) { s_ps5_perf.worst_ms = ms; s_ps5_perf.worst_frame = s_hw.frame; }
+    /* 17 ms is a near miss; 33 ms is a visible one at 60 Hz. Load-sized
+     * frames are always printed, because they are the guest's own work. */
+    if (ms >= 17.0 && (ms >= 500.0 || s_ps5_perf.logged < 40)) {
+        s_ps5_perf.logged++;
+        fprintf(stderr, "[PERF PS5] %s frame %u %.1f ms: present %.1f, draw %.1f, pipe %llu/%.1f ms, deferred %llu, texture %u/%.1f ms/%llu KB, vertices %u\n",
+                ms >= 500.0 ? "load" : "slow", s_hw.frame, ms, present_ms, draw_ms,
+                (unsigned long long)pipes, pipe_ms, (unsigned long long)skips,
+                s_ps5_perf.tex_count, tex_ms,
+                (unsigned long long)(s_ps5_perf.tex_bytes >> 10), verts);
+    }
+    s_ps5_perf.last_flip = now;
+    s_ps5_perf.last_present = s_hw.present_ticks;
+    s_ps5_perf.last_pipe = s_ng.pipeline_wait_ticks; s_ps5_perf.last_pipe_count = s_ng.pipeline_waits;
+    s_ps5_perf.last_skip = s_ng.pipeline_skips;
+    s_ps5_perf.last_draw = s_hw_stat_draw_ticks; s_ps5_perf.last_verts = s_hw_stat_verts;
+    s_ps5_perf.tex_ticks = s_ps5_perf.tex_bytes = 0; s_ps5_perf.tex_count = 0;
+}
+#endif
 static void ng_flip(void)
 {
     static DWORD last_log;
+#if defined(RESOT_PS5_GPU)
+    ps5_frame_stats(); /* RE-SoT (PS5): attribute every frame that misses the budget. */
+#endif
     static uint32_t last_frame;
     static uint64_t last_draws;
     DWORD now;
@@ -2416,6 +2684,15 @@ static void ng_flip(void)
             fprintf(stderr,"[HW native] ms/frame: vertex %.2f draw %.2f executor %.2f present %.2f title %.2f; textures %.1f vertices %.0f\n",
                     timing[8],timing[9],timing[10],timing[11],timing[12],timing[6],timing[7]);
         }
+#if defined(RESOT_PS5_GPU)
+        fprintf(stderr,"[PERF PS5] frames over 17/25/33/50 ms: %u/%u/%u/%u; worst %.1f ms at frame %u; %u outlier lines; %llu guest draws deferred for cold pipelines\n",
+                s_ps5_perf.over17, s_ps5_perf.over25, s_ps5_perf.over33, s_ps5_perf.over50,
+                s_ps5_perf.worst_ms, s_ps5_perf.worst_frame, s_ps5_perf.logged,
+                (unsigned long long)(s_ng.pipeline_skips - s_ps5_perf.summary_skip));
+        s_ps5_perf.summary_skip = s_ng.pipeline_skips;
+        s_ps5_perf.over17 = s_ps5_perf.over25 = s_ps5_perf.over33 = s_ps5_perf.over50 = 0;
+        s_ps5_perf.logged = 0; s_ps5_perf.worst_ms = 0; s_ps5_perf.worst_frame = 0;
+#endif
 #if RESOT_RUNTIME_RETAIL
         fprintf(stderr,"[HW native] visibility: %llu queries, %llu/%llu reports completed\n",
                 (unsigned long long)s_ng_visibility.queries,(unsigned long long)s_ng_visibility.completed,
