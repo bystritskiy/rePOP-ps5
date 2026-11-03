@@ -1,55 +1,5 @@
 # Validation log
 
-## PS5 port, 2026-11-02: holds 60 fps at the start of a level
-
-The 01.004.001 status line said 29.9 fps; PS5Upload's Play overlay showed 34.3
-fps. The console's own log showed the game at 59.9-60.0 fps in the same
-session: the overlay number is the stream's frame rate, not the game's. The
-first five-second [HW native] window was 29.9 fps because it contained the
-menu/level start, not because play ran at 30.
-
-The drops that remained were cold stalls. Frame diagnostics were added
-(`[PERF PS5]`: each frame over 17 ms with present, draw, pipeline wait, texture
-upload, vertices; a five-second outlier summary). On the retail target, a new
-game, 2160p (4.5x), Full preset, VSync on:
-
-- Before the fixes: frame 1 waited **875.3 ms** for one cold pipeline, frame 30
-  waited **656.8 ms** for two, and the first-level load (frame 1438,
-  1064.2 ms) had 77 waits; frames 2039 and 2252 were 85.5 and 79.4 ms with
-  65.9 and 62.6 ms of pipeline wait. Texture upload in that load was
-  56 uploads / **43.8 ms** / 3.2 MB, and frame 1439 spent 44.1 ms in draw
-  encoding plus 41.7 ms in 48 texture uploads.
-- The renderer now lets a guest draw wait at most **4 ms per frame** for a
-  cold pipeline and defers that draw to the next frame; the background
-  compiler keeps the pipeline. The same load: 146 waits / **4.4 ms**, 135
-  draws deferred, no 657-875 ms frame. Frame 11 was 30.9 ms (was 120.3).
-- Xbox DXT1/DXT3/DXT5 textures are uploaded as BC1/BC2/BC3 block data instead
-  of being decoded to BGRA on the CPU and given GPU-generated mips. The same
-  level load's texture time went from 31.9 ms to **13.4 ms** (1.7 MB transferred)
-  and draw encoding from 34.7 ms to 16.1 ms. The 2048x512 menu-font sheet
-  (A8R8G8B8, not DXT) still costs 39 ms the first time it is made; a PS5-only
-  cache keeps it for later uploads.
-- In play on the first level: 59.9-60.0 fps, 375-733 draws per frame, draw
-  encoding 2.9-4.8 ms, present wait 7.8-11.5 ms; no frame over 25 ms except
-  one 46.6 ms guest hitch. A five-second window normally had 30-68 frames in
-  the 17-20 ms near-miss band but none over 25 ms. The 40.5 s first frame and
-  the 833-853 ms level load are the title's own data loading, not the
-  renderer.
-- Retail Special Load Map, 8101 Tomb (the later-level test in `history/`):
-  59.9-60.0 fps, 196-227 draws per frame, draw 1.4-1.8 ms, present 13.0-13.8
-  ms; no frame over 25 ms in 25 s of play after the map settled. The map load
-  was 391.8 ms with 17 waits / 4.2 ms, 12 draws deferred and 13.8 ms of
-  texture uploads; a 26.0 ms warm-up frame followed with 43 waits / 4.2 ms.
-
-Built and deployed as a folder (`cmake --build build/ps5/game-xbox-retail`,
-`tools/link-ps5-game.sh xbox-retail`, `tools/package-ps5-game.py`,
-`tools/deploy-ps5-folder.py --addr 192.168.1.43`). `python3 tools/test-ps5.py`,
-`tools/test-menu-pointer.py` and `tools/tests/test-ps5-inventory.py` pass;
-`build/ps5/game-xbox-demo` was not rebuilt (its CMake cache names a missing
-`/Volumes/T7Blue/Ports/rePOP-ps5` root). Not checked: later levels, a long
-session, sound, the demo target, and Windows/Android builds of the shared
-renderer changes (all new renderer code is under `RESOT_PS5_GPU`).
-
 ## PS5 port, 2026-10-29: 01.004.001 on the console
 
 `package-ps5-game.py --zip` from `ce8948a`: `bin/ps5/PPSA99023-01.004.001.zip`,
@@ -2344,7 +2294,7 @@ Commands and results:
   no translator failures. Demo run used synchronous compilation before the final
   Windows default changed; retail final run confirms background compilation and
   6,361 reference-pipeline draws while translating. Retail steady menu windows
-  were about 157ï¿½168 FPS; demo about 186ï¿½195. These are not controlled benchmarks.
+  were about 157–168 FPS; demo about 186–195. These are not controlled benchmarks.
   Evidence: `logs/shader-translate-*-windows.txt` and `*-frame*`.
 - Android device `24069PC21G` (SM8635): `adb install -r bin/reSOT-android.apk`,
   rooted `am start -n com.fulger.resot/.GameActivity --es target demo|retail
@@ -2359,9 +2309,9 @@ Commands and results:
   `logs/shader-translate-demo-select.png` (its name reflects the capture action,
   not the scene it ultimately showed).
 
-Device demo title windows reached about 87ï¿½99 FPS; denser opening-scene windows
-still include 48.8ï¿½50.3 FPS at about 530ï¿½584 draws/frame. Retail scene windows
-include about 51.7ï¿½78.9 FPS. These are five-second runtime averages, not frame-
+Device demo title windows reached about 87–99 FPS; denser opening-scene windows
+still include 48.8–50.3 FPS at about 530–584 draws/frame. Retail scene windows
+include about 51.7–78.9 FPS. These are five-second runtime averages, not frame-
 time percentiles or matched before/after comparisons. Resolution, frame caps,
 scene/camera and old default differences prevent comparison with the previous
 60-FPS-limited reports. No causal FPS gain, sustained 60 FPS, full-game shader
