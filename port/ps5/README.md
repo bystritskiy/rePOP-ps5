@@ -9,7 +9,9 @@ packaging and install tools.
 **Status (2026-11-03).** Based on upstream
 [FulGerNet/rePOP v0.5.0](https://github.com/FulGerNet/rePOP/releases/tag/reSOTv0.5.0)
 (`reSOTv0.5.0`, `7c2a995c83e07facf582c77fc954bc3968fdd9e5`); PS5 content
-version `01.005.000`, not yet run on the console. The European disc that
+version `01.005.000`. On the console (2026-11-03) it reached the menus and
+played about three minutes of the first level at 59.7-60.0 fps with the
+direct renderer (`docs/VALIDATION.md`). The European disc that
 v0.5.0 supports on Windows and Android is still refused here (the app checks
 the USA `default.xbe`). Earlier, upstream v0.4.0 (01.004.000/01.004.001)
 compiled and linked with SDL3 GPU, Vulkan and RADV. With 01.004.000 on the console: Special Load Map loading a map, the cheats switch in play, 7601 Salle without its crash, the

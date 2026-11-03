@@ -1,5 +1,41 @@
 # Validation log
 
+## PS5 port, 2026-11-03: 01.005.000 (upstream v0.5.0) on the console
+
+FW 13.40, retail USA disc files in `/data/reSOT/xbox-retail`, the app folder
+from `5a8ebab` sent with `tools/deploy-ps5-folder.py --addr 192.168.1.43`
+(19 of 26 files). The 01.004.001 build that was running (PID 101, sandbox
+`PPSA99023_000`) was closed through Payload Manager first. The payload loader
+on port 9021 was closed and `elfldr/ensure` did not reopen it, so the tile was
+started from the home screen through PS5Upload Remote Play; the same stream
+gave the frames and controller input below. Defaults: 2160p (4.5x), Full
+preset, VSync on.
+
+Seen:
+- Boot: `[DIRECT] mode 1 (default)`, flips at most 2 ahead of the executor,
+  `vulkan-pipelines.bin` 761,056 bytes loaded; the intro movie, the main menu
+  over the 3D garden with the HD font and PlayStation button prompts,
+  reSOT Options with Cheats, Special Load Map and Language, which lists
+  English (selected), French, Spanish, Deutsch and Italiano (not changed).
+- Start New Game: the balcony cutscene, the first level's opening cutscene and
+  about three minutes of play with the left and right sticks (running,
+  climbing onto a ledge); HUD sand gauge, PlayStation prompts (Cross, Circle,
+  R2), lighting and shadows looked right in the 1080p stream frames.
+- `[HW native]` five-second windows: 37 of 39 after the menu at 59.7-60.0 fps
+  (the other two, 34.7 and 36.6, contain level loads); in play 281-626 draws
+  per frame, draw encoding 2.3-4.7 ms, present wait 8.3-12.4 ms, textures
+  0.0-0.2 ms. 01.004.001 logged 2.9-4.8 ms of draw encoding at 375-733 draws.
+- Direct path at the end: 475,122 pushbuffer runs replayed 1,861,312 draws,
+  178 records, 0 changed, 0 refused; the title waited for the executor 11,774
+  times, never over 100 ms.
+- No fatal signal while running. The two SIGSYS in the kernel log follow
+  `exit()` of PIDs 101 and 104, the two processes ended with `process_kill`.
+
+Not checked: the 8101 Tomb load, a long session (the black-geometry risk of
+`RESOT_FLIP_AHEAD=2`), sound, saves, German or Italian in game, system
+screenshots at full resolution (only compressed stream frames were seen).
+Logs: `logs/ps5-01.005.000/` (ignored).
+
 ## PS5 port, 2026-11-03: upstream v0.5.0 merged (01.005.000)
 
 The fork's `dbcb2c2` (cold-pipeline budget, DXT block upload, HD-font cache)

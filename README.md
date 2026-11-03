@@ -38,8 +38,9 @@ at 1440p (3x) internal resolution.</sub></p>
 
 ## Status
 
-Version **01.005.000**, based on upstream reSOT v0.5.0; built on the Mac,
-not yet run on the console. Upstream v0.4.4 draws through the direct renderer
+Version **01.005.000**, based on upstream reSOT v0.5.0. On the console
+(2026-11-03): menus, the five-language page and about three minutes of the
+first level at 59.7-60.0 fps with the direct renderer. Upstream v0.4.4 draws through the direct renderer
 by default, replays the retail game's recorded command buffers from the GPU
 and lets the game run up to two frames ahead of the renderer
 ([release notes](docs/releases/v0.4.4.md)); v0.5.0 adds German and Italian
