@@ -1,5 +1,17 @@
 # Validation log
 
+## PS5 port, 2026-11-03: 01.005.000 published
+
+`package-ps5-game.py --zip` from `c7d5320`: `bin/ps5/PPSA99023-01.005.000.zip`,
+18,283,160 bytes, SHA-256 `d2e9b34eb8f292ae77f62562fbaec10fe9d36bd43d8028aa88fb12cdb1011db2`
+(GitHub reports the same digest for the asset), published as release
+[01.005.000](https://github.com/bystritskiy/rePOP-ps5/releases/tag/01.005.000).
+Its `eboot.bin` (54,402,685 bytes) was signed from the same linked
+`llvm-pie.elf` (14:50) as the folder run on the console above; only the
+packaging was repeated. Its `sce_sys/param.json` names 01.005.000. The
+RecompStore and ProsperoStore listings take `PPSA99023-*.zip` from this
+repository's releases; whether they picked this one up was not checked yet.
+
 ## PS5 port, 2026-11-03: 01.005.000 (upstream v0.5.0) on the console
 
 FW 13.40, retail USA disc files in `/data/reSOT/xbox-retail`, the app folder
