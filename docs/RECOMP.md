@@ -15,8 +15,11 @@ per target is small and lives in `source/<target>/`:
 The pushbuffer executor still decodes the same NV2A methods. In
 `nv2a_hw_d3d11.inc`, `RESOT_RENDERER=d3d12` or `vulkan` dispatches to
 `nv2a_hw_native.inc` before creating any D3D11 device. SDL GPU selects
-`direct3d12` or `vulkan` explicitly; shaders are embedded DXIL/SPIR-V compiled
-by `tools/build-native-shaders.py` from the same combiner HLSL as D3D11.
+`direct3d12` or `vulkan` explicitly; shaders are embedded DXBC (SM 5.1)/SPIR-V
+compiled by `tools/build-native-shaders.py` from the same combiner HLSL as D3D11.
+A D3D12 pipeline cannot mix SM 5.1 with SM 6.0 (`STATE_CREATION` error 1046,
+seen in the GPU suite), and run-time translations are fxc output, so no native
+D3D12 shader is DXIL any more; DXC still produces the SPIR-V.
 This replaces the former D3D11On12 and DXVK paths. D3D11 stays the default.
 
 The native frontend runs supported vertex programs on the GPU through
@@ -38,6 +41,8 @@ units. D3D12 uses hardware query heaps and readback resources; Vulkan uses
 precise occlusion query pools. No private SDL layout crosses the DLL ABI.
 `nv2a_hw_native_visibility.inc` scopes counters to render passes, normalizes
 to guest pixels, and publishes reports only after nonblocking fence polling.
+A report does not force a submission: its queries go with the next one, at most
+8 ms later (`ng_visibility_kick`), so a scene's dozens of reports share a few.
 CLEAR drops the current counter's references but preserves pending reports;
 queries retire only after GPU completion. Clears and host blits are excluded.
 The native renderer is rejected on retail if query ABI/capability is missing.
@@ -88,8 +93,54 @@ The native shader builder also skips unused vertex-interpreter operands
 selection, and directly returns identity-swizzled sources. These are host
 shader transformations; guest programs, constants and seeds are unchanged.
 
-Specialized native GPU vertex-program translation, mip-aware border filtering,
-full stencil and broader gameplay/performance validation remain unfinished. See the latest
+### Program translation on each API
+
+| | Vertex program | Combiner state |
+| --- | --- | --- |
+| D3D11 | `nv2a_vsh_emit_hlsl`, fxc | `resot_ps_emit` (`ps_tr`), fxc; `ps_main` until it lands |
+| D3D12 | `resot_translate_vertex_dialect` (`vs_tr`), fxc; `vs_uber` until it lands | `resot_ps_emit` (`ps_tr`), fxc; `ps_main` until it lands |
+| Vulkan | `resot_translate_vertex`, glslang + SPIRV-Tools; `vs_uber` until it lands | frozen SPIR-V constants + SPIRV-Tools; `ps_main` until it lands |
+
+`resot_native_combiner.h` writes `ps_main`'s statements with the control words
+as literals, so fxc folds the selectors. Unused stages and samples disappear, and
+a state with no clip plane or active alpha test has no `discard`, which keeps
+early depth rejection. Factors, fog, texture scales, borders and the alpha
+reference stay uniforms. The key is canonical on all three APIs: stale words
+of inactive stages, an alpha function with the test off, clip modes without a
+clip stage and combiner words with no program select no new shader. Compilation
+runs on background workers, one reserved for reference programs; a program compiled once comes from `shadercache`.
+`RESOT_PS_TRANSLATE=0` (D3D11), `RESOT_NATIVE_SPECIALIZE=0` and
+`RESOT_NATIVE_TRANSLATE=0` (D3D12, Vulkan) restore the interpreters for A/B tests.
+
+### Render passes on tile GPUs
+
+A pass that loads and stores its targets costs a tile GPU a trip over the whole
+target, whatever it draws. Pinyon Shift's backlog (Forza Horizon, about 5000 draws
+a frame) reached the same conclusion; its per-draw caches matter less at reSOT's
+300. Two of its ideas apply here, written anew:
+
+- A full clear (all channels, whole surface) waits for the target's next pass and
+  becomes its load op (`ng_clear`, `ng_take_clears`). Anything else that reads the
+  target first, as a texture, in composition or in a readback, settles it
+  (`ng_settle_color`, `ng_settle_depth`). `RESOT_NATIVE_FOLD_CLEARS=0` restores the
+  separate passes.
+- Visibility methods no longer flush the queue. They wait in it in guest order
+  (`NgVisEvent`) and a flush applies them between draws, ending and beginning
+  queries inside one pass. Vulkan forbids resetting a query there, so the flush
+  resets the ones it will need first (`ng_vis_reserve`). `RESOT_NATIVE_VIS_SAME_PASS=0`
+  restores a flush per method. `s_ng.vis_queue_enabled` is the guest's state as draws
+  are queued, which the retail halo test reads; `s_ng_visibility.enabled` follows
+  encoding.
+
+Every 5 s the log reports `[HW native] per frame: ... render passes, ... queue
+flushes, ... submissions, ... clears in load ops`.
+
+Taken from the same study and not adopted: register-write elision (reSOT's constant
+writes already compare), single-sampled surfaces (NV2A surfaces here have one sample),
+and a decode/record split (SDL GPU records on the executor).
+
+Mip-aware border filtering, full stencil and broader gameplay/performance
+validation remain unfinished. See the latest
 entry in `VALIDATION.md` for observations, commands and remaining limits.
 
 ## Android host (arm64)
@@ -339,10 +390,10 @@ Each distinct NV2A vertex program is translated to an HLSL vertex shader once
 attributes and the 192 program constants; a batch that cannot go that way
 (more than eight enabled attributes, a program that writes constants) is
 transformed by the interpreter instead (`RECOMP_HW_CPU_VSH=1` forces that).
-Vertices and indices are appended to ring buffers. One pixel shader interprets
-the register-combiner control words (a port of `nv2a_combiner.c`), so no pixel
-shader is generated per state; check all of it with
-`python tools/check-hlsl.py`. Surfaces live
+Vertices and indices are appended to ring buffers. `ps_main` interprets the
+register-combiner control words (a port of `nv2a_combiner.c`) and draws until the
+state's own shader is compiled (see Program translation on each API); check
+all of it with `python tools/check-hlsl.py`. Surfaces live
 on the host GPU keyed by guest offset and width, and a texture stage that
 names a surface samples that render target. Other textures are decoded from
 guest memory by the software path's decoder and cached with a per-frame
@@ -495,6 +546,7 @@ Diagnostics added by the host (`port/windows/src/main.c`), all off unless set:
 | Variable | Effect |
 | --- | --- |
 | `RESOT_THREAD_DUMP_SECS=n` | every n seconds, the host call chain of every thread; lifted routines appear as `sub_XXXXXXXX`, so a deadlock shows both sides |
+| `RESOT_STALL_DUMP=0` | Windows: turns off the one thread dump written when the title has made no KickOff for 20 s (`[THREADS] no KickOff for 20 s`); on by default |
 | `RESOT_PROFILE_MS=n` | samples the two busiest threads every n ms and reports, every 10 s, the routines the samples fell in |
 | `RESOT_TRACE_ICALLS=va,...` | logs each call that reaches those routines through a pointer, with `ecx`, the first arguments and the returned `eax` |
 | `RECOMP_SYNC_TRACE=1` | mutex, event, thread-resume and unbounded-wait calls with thread id and guest caller |

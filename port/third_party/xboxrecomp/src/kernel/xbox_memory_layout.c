@@ -200,7 +200,30 @@ static int kick_ahead(void)
     static int ahead = -1;
     if (ahead < 0) {
         const char *e = getenv("RESOT_KICK_AHEAD");
-        ahead = e ? atoi(e) : (RESOT_RUNTIME_RETAIL ? 16 : 0);
+        /* RE-SoT: retail default 1, was 16. The 0.4.0 retail logs (Windows
+         * bin/logs 2026-10-28, Android OnePlus SM8650 and Xiaomi SM8635) all
+         * show the demo's 16-ahead symptom: float payloads read as JUMP/CALL
+         * words ([PB] walk left physical memory after 3F800000 and the like),
+         * then garbage texture, palette and report addresses, flicker, black
+         * scenes and faults. The GPU idle/empty bits always read idle, so the
+         * title may reuse what up to 16 queued submissions still name. One
+         * submission ahead is the depth the demo drew correctly with.
+         * RE-SoT: retail with the direct path (RESOT_DIRECT_DRAW=1): 8. There
+         * indices, user-pointer vertices, state and pushbuffer replays live in
+         * host copies, not in guest memory the title reuses. 2026-11-02, Windows
+         * D3D12, user's run: no defect in several scenes; a heavy scene (1,607
+         * draws a frame) from 64-67 to 82-88 fps, the title no longer waiting on
+         * the executor segment by segment. Not run with the direct path off, nor
+         * on Android, nor on the demo, at this depth. */
+        {
+            extern int nv2a_direct_mode(void);
+            /* RE-SoT: 32 since 2026-11-02 (evening), with the title held to two
+             * flips ahead of the executor (nv2a_direct_flip_wait): Vulkan, heavy
+             * scene, about 84 -> 143 fps. 32 alone drew most of the
+             * level black after minutes (light probes read about two frames late);
+             * the flip limit is what bounds it. */
+            ahead = e ? atoi(e) : (RESOT_RUNTIME_RETAIL ? (nv2a_direct_mode() > 0 ? 32 : 1) : 0);
+        }
         if (ahead < 0) ahead = 0;
         fprintf(stderr, "  [NV2A] KickOff: %s (%d submissions ahead)\n",
                 ahead ? "asynchronous" : "synchronous", ahead);
@@ -225,6 +248,9 @@ static LONGLONG s_kick_freq;
 static volatile LONG s_kick_waits, s_kick_calls;
 static volatile LONGLONG s_kick_wait_ticks, s_kick_wait_max;
 static LONGLONG s_exec_scan_ticks, s_exec_present_ticks, s_exec_segments;
+/* RE-SoT: KickOffs since start, never reset: a host stall watch reads it. */
+static volatile LONG s_kick_total;
+long xbox_Nv2aKickTotal(void) { return (long)s_kick_total; }
 
 static LONGLONG kick_now(void)
 {
@@ -244,6 +270,7 @@ void xbox_Nv2aWaitClear(uint32_t va, uint32_t mask)
     LONGLONG t0 = 0, waited;
     int ahead = kick_ahead();
     InterlockedIncrement(&s_kick_calls);
+    InterlockedIncrement(&s_kick_total);
     if (ahead) {
         LONG old;
         MemoryBarrier();   /* the write-combining flush itself */
@@ -1191,6 +1218,17 @@ int xbox_Nv2aCaughtUp(void)
     for (int i = 0; i < g_fence_mirror_count; i++)
         if (g_fence_mirrors[i].pending_ptr) return 0;   /* published after the scan */
     return 1;
+}
+
+/* RE-SoT: has the executor executed every submission it was given? Unlike
+ * xbox_Nv2aCaughtUp, fences still to be published do not count: nothing more
+ * can reach the executor until the title kicks again. nv2a_direct_flip_wait. */
+int xbox_Nv2aExecutorIdle(void)
+{
+    if (!g_nv2a_memory) return 1;
+    return s_kick_issued == s_kick_done &&
+        *(volatile uint32_t *)((char *)g_nv2a_memory + NV2A_USER_DMA_GET)
+        == *(volatile uint32_t *)((char *)g_nv2a_memory + NV2A_USER_DMA_PUT);
 }
 
 void xbox_Nv2aSoftwareNotify(uint32_t param)

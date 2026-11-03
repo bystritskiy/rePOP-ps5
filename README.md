@@ -38,8 +38,15 @@ at 1440p (3x) internal resolution.</sub></p>
 
 ## Status
 
-Version **01.004.001**, based on upstream reSOT v0.4.0. Tested on one
-console: FW 13.40, kstuff-lite 1.11, ShadowMountPlus 1.7-beta5fix1.
+Version **01.005.000**, based on upstream reSOT v0.5.0; built on the Mac,
+not yet run on the console. Upstream v0.4.4 draws through the direct renderer
+by default, replays the retail game's recorded command buffers from the GPU
+and lets the game run up to two frames ahead of the renderer
+([release notes](docs/releases/v0.4.4.md)); v0.5.0 adds German and Italian
+and the European disc. The PS5 app still accepts only the USA disc's
+`default.xbe`. The console results below are from 01.004.001 and earlier.
+Tested on one console: FW 13.40, kstuff-lite 1.11, ShadowMountPlus
+1.7-beta5fix1.
 
 Upstream v0.4.0 brings Special Load Map and a built-in cheats switch in reSOT
 Options (main and pause menus), an HD menu font, and fixes for the crash in

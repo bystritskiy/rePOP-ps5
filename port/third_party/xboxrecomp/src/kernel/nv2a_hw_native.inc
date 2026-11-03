@@ -12,7 +12,6 @@
 #include "nv2a_native_compat.h" /* RE-SoT: bounded device workaround; environment override for A/B. */
 #include "nv2a_texture_probe.h" /* RE-SoT: separate source/upload/mip corruption using readbacks. */
 #include "resot_geometry_cache.h" /* RE-SoT: reuse immutable input geometry, keep per-draw constants live. */
-#include "resot_hd_font.h" /* RE-SoT: an HD menu font made from the title's sheet. */
 #include "nv2a_hw_native_visibility.inc"
 static NgVisibility s_ng_visibility; /* RE-SoT: retail-only counting, shared native drivers. */
 static int s_ng_compat; /* RE-SoT: reference GPU shaders, not the CPU vertex interpreter. */
@@ -35,16 +34,32 @@ static bool (SDLCALL *s_ng_cache_save)(SDL_GPUDevice *);
 #include "resot_native_specialize.h" /* RE-SoT: constant Vulkan combiner programs. */
 /* RE-SoT: the specialization key reads only these immutable program words. */
 _Static_assert(sizeof(HwPsConst)==168*4 && offsetof(HwPsConst,ctl)==96*4 &&
-               offsetof(HwPsConst,misc)==132*4,"Native fragment constant ABI changed");
+               offsetof(HwPsConst,tscale)==116*4 && offsetof(HwPsConst,misc)==132*4 &&
+               offsetof(HwPsConst,border_info)==152*4,"Native fragment constant ABI changed");
 
 typedef struct {
     SDL_GPUTexture *color, *depth;
     uint32_t offset, w, h, sc, frame;
+    /* RE-SoT: guest RAM under the target when the GPU last drew it (see
+     * ng_surface_stale); the host image lives only on the host. */
+    uint32_t bytes, ram_hash, ram_frame, ram_checked;
+    int ram_stale; /* RE-SoT: RAM alias validity is independent of the displayed GPU image. */
+    int clear_pending; /* RE-SoT: a full clear waiting for the next pass's load op (ng_clear). */
+    SDL_FColor clear_color;
 } NgSurface;
 typedef struct {
     SDL_GPUTexture *image;
     uint32_t offset, w, h;
+    uint32_t clear_mask; /* RE-SoT: bit 0 depth, bit 1 stencil, as ng_clear's param. */
+    float clear_depth;
+    Uint8 clear_stencil;
 } NgDepth;
+/* RE-SoT: a visibility method in guest order: applied before draw number
+ * `draw` of the queue, so its draws can share a render pass. */
+typedef struct {
+    uint32_t draw, method, value;
+    uint64_t stamp;
+} NgVisEvent;
 typedef struct {
     SDL_GPUTexture *image;
     Texture guest;
@@ -64,7 +79,7 @@ typedef struct NgTranslatedVertex {
 } NgTranslatedVertex;
 typedef struct NgTranslatedFragment {
     struct NgTranslatedFragment *next;
-    uint32_t key[RESOT_PS_SPEC_WORDS];
+    uint32_t key[RESOT_PS_KEY_WORDS];
     SDL_Mutex *lock;
     SDL_GPUShader *shader;
     int attempted;
@@ -110,12 +125,22 @@ typedef struct {
     SDL_FColor blend;
     uint32_t offset,count;
     uint32_t reused_geometry; /* RE-SoT: offsets already refer to the current GPU ring generation. */
+    uint32_t resident; /* RE-SoT: the offsets are in the resident buffers (nv2a_direct.h). */
     /* RE-SoT: vs_uber draws: an index run over the batch's distinct vertices,
      * and the constant/program snapshots (s_ng.cpool/ppool) they run with. */
     uint32_t first_index,index_count,cslot,pslot,pcount;
     double pixel_scale; /* RE-SoT: guest pixel count normalization. */
 } NgDraw;
 static void ng_flush_draws(void);
+static void ng_resident_init(void);
+static void ng_resident_flush(void);
+/* RE-SoT: geometry of direct draws lives outside the append ring, so a wrap of
+ * the ring (three a second in the demo's Entree) does not send it up again. */
+#define NG_RES_VB_BYTES (64u<<20)
+#define NG_RES_IB_BYTES (16u<<20)
+#define NG_RES_UPLOADS 1024
+typedef struct { uint32_t staged,vertex_offset,vertex_bytes,index_offset,index_bytes; } NgResidentUpload;
+static uint16_t ng_resident_iout[NV_MAX_INDICES*3]; /* a strip's triangles */
 static struct {
     SDL_Window *window;
 #if defined(__ANDROID__)
@@ -141,7 +166,20 @@ static struct {
     uint64_t translated_vsh_draws; /* RE-SoT: admitted direct-program coverage. */
     uint64_t reference_draws; /* RE-SoT: reference draws while translation pipelines compile. */
     uint64_t rejected_draws; /* RE-SoT: draws skipped because the driver rejected every program. */
+    /* RE-SoT: tile GPUs pay a pass over the tiles for each render pass that
+     * loads and stores its targets (Pinyon Shift's fh1_fold_clears and open
+     * rendering, ideas only). RESOT_NATIVE_FOLD_CLEARS=0 and
+     * RESOT_NATIVE_VIS_SAME_PASS=0 restore the former passes for A/B. */
+    int fold_clears, vis_same_pass;
+    int vis_queue_enabled; /* RE-SoT: guest state at queue time; s_ng_visibility.enabled follows encoding. */
+    NgVisEvent vis_events[NG_VIS_EVENTS];
+    uint32_t vis_event_count;
+    uint64_t stat_passes, stat_flushes, stat_submits, stat_folded_clears;
     uint64_t pipeline_waits, pipeline_wait_ticks; /* RE-SoT: measure cold stalls while preserving geometry. */
+    Uint64 last_query_submit; /* RE-SoT: visibility submissions are batched. */
+    Uint64 last_flip_counter; /* RE-SoT: frame spikes, which a 5 s average hides. */
+    double worst_frame_ms;
+    uint32_t frames_over_33ms, frames_over_100ms;
     uint64_t flare_depth_draws; /* RE-SoT: observe the retail light-halo correction separately from queries. */
     uint32_t spec_ps_count;
     uint64_t spec_ps_draws; /* RE-SoT: measure specialization coverage. */
@@ -172,8 +210,7 @@ static struct {
     HwPsConst last_pc;
     int vc_valid, pc_valid;
     /* RE-SoT: overlay and F5/F6 panel images, kept while their size holds. */
-    SDL_GPUTexture *overlay, *panel;
-    SDL_GPUTexture *e3logo; /* RE-SoT: demo menu logo (ng_compose) */
+    SDL_GPUTexture *overlay, *panel, *label, *lines; /* RE-SoT: label: the F8 mode's name; lines: its volumes. */
     uint32_t overlay_w, overlay_h, overlay_serial, panel_w, panel_h;
     DWORD movie_log;
     uint32_t movie_composes; /* RE-SoT: distinguish movie repaint cadence from guest flips. */
@@ -196,6 +233,12 @@ static struct {
     uint32_t boot_trace; /* RE-SoT: first-frame Mali checkpoints, never per-frame logging. */
     int texture_probe; /* RE-SoT: automatic Adreno 640 diagnostic, bounded per format. */
     uint8_t texture_probe_formats[256],texture_probe_count;
+    SDL_GPUBuffer *res_vertices,*res_indices; /* RE-SoT: nv2a_direct.h */
+    SDL_GPUTransferBuffer *res_transfer;
+    uint32_t res_transfer_size,res_generation,res_vertex_used,res_index_used;
+    uint8_t *res_upload;
+    uint32_t res_upload_bytes,res_upload_cap,res_upload_count;
+    NgResidentUpload res_uploads[NG_RES_UPLOADS];
 } s_ng;
 /* RE-SoT: pipeline compiler threads. On Adreno a new pipeline with the
  * NV2A combiner shader took 0.15-1.8 s inside vkCreateGraphicsPipelines;
@@ -203,7 +246,11 @@ static struct {
  * 12 s in total (2026-10-20 device logs, "[HW native] pipeline N created in").
  * RE-SoT: translated jobs use reference PSOs while compiling; cold reference
  * jobs wait without dropping geometry. Cache saves also run off the executor. */
-#define NG_COMPILERS 2
+/* RE-SoT: the first worker takes only reference jobs. fxc spends 30-180 ms on a
+ * translated D3D12 vertex program; with two shared workers a cold reference
+ * draw waited for those, 556 ms within one 5 s window of the 2026-10-31 retail
+ * log (executor 24.7 ms/frame there, 3 ms before). */
+#define NG_COMPILERS 3
 static struct {
     SDL_Mutex *lock;
     SDL_Condition *cond;
@@ -257,6 +304,7 @@ static SDL_GPUCommandBuffer *ng_cmd(void)
 static void ng_submit_encoded(void)
 {
     if (s_ng.cmd) {
+        s_ng.stat_submits++;
         if(s_ng.boot_trace&64) ng_boot_stage(128,"guest command submission begin"); /* RE-SoT */
         if (s_ng_visibility.pending) {
             SDL_GPUFence *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(s_ng.cmd);
@@ -311,17 +359,56 @@ static void ng_visibility_poll(void)
 {
     if (!ng_vis_poll(&s_ng_visibility,ng_visibility_complete,NULL)) ng_fail("native visibility polling");
 }
-static void ng_visibility_method(uint32_t method, uint32_t value, uint64_t stamp)
+/* Caller holds s_hw.lock. Submits queries waiting for one, at most every 8 ms
+ * unless forced. Earlier queued draws go first, so guest order holds. */
+static void ng_visibility_kick(int force)
 {
-    ng_flush_draws(); /* State transitions follow preceding queued draws. */
+    Uint64 now;
+    if (!s_ng_visibility.pending && !s_ng.vis_event_count) return; /* RE-SoT: reports still queued count. */
+    now = SDL_GetPerformanceCounter();
+    if (!force && now-s_ng.last_query_submit < SDL_GetPerformanceFrequency()/125) return;
+    ng_flush_draws();
+    ng_submit_encoded();
+    s_ng.last_query_submit = now;
+}
+void nv2a_hw_native_visibility_kick(void)
+{
+    EnterCriticalSection(&s_hw.lock);
+    if (ng_active()) { ng_visibility_kick(1); ng_visibility_poll(); }
+    LeaveCriticalSection(&s_hw.lock);
+}
+/* Caller is encoding: every draw before this method has been recorded. */
+static void ng_visibility_apply(uint32_t method, uint32_t value, uint64_t stamp)
+{
     if (method == 0x17C8) ng_vis_clear(&s_ng_visibility);
     else if (method == 0x17CC) s_ng_visibility.enabled = value != 0;
     else {
         if (s_ftrace == 2) fprintf(stderr,"[FTRACE native] report addr=%08X stamp=%llu segments=%u\n",
             value,(unsigned long long)stamp,s_ng_visibility.count); /* RE-SoT: no fabricated light visibility. */
-        ng_submit_encoded(); /* Make the report's queries available to GPU execution. */
         if (!ng_vis_report(&s_ng_visibility,value,stamp)) ng_fail("native visibility report");
     }
+}
+static void ng_visibility_method(uint32_t method, uint32_t value, uint64_t stamp)
+{
+    if (method == 0x17CC) s_ng.vis_queue_enabled = value != 0;
+    /* RE-SoT: retail changes segment dozens of times a frame. A flush for each
+     * meant a copy pass, and a render pass loading and storing the whole target;
+     * in the queue, those draws stay in one pass (ng_flush_draws). */
+    if (s_ng.vis_same_pass) {
+        NgVisEvent *e;
+        if (s_ng.vis_event_count == NG_VIS_EVENTS) ng_flush_draws();
+        e = &s_ng.vis_events[s_ng.vis_event_count++];
+        e->draw = s_ng.queued_count; e->method = method; e->value = value; e->stamp = stamp;
+    } else {
+        ng_flush_draws(); /* State transitions follow preceding queued draws. */
+        ng_visibility_apply(method,value,stamp);
+    }
+    /* RE-SoT: retail issues dozens of reports a frame (9414 queries in 5 s at
+     * 70 fps), and a submission each dominated the executor. A report only needs
+     * its queries to reach the GPU soon: ng_vis_poll completes it after the
+     * fence of whichever submission carries them, and nothing waits for it
+     * (ng_visibility_kick covers a title polling without drawing). */
+    if (method != 0x17C8 && method != 0x17CC) ng_visibility_kick(0);
     ng_visibility_poll();
 }
 static SDL_GPUTexture *ng_image(uint32_t w, uint32_t h, int cube, uint32_t levels,
@@ -382,25 +469,47 @@ static void ng_upload_cycle(SDL_GPUTexture *image, const uint32_t *pixels,
     if (mips) SDL_GenerateMipmapsForGPUTexture(ng_cmd(), image);
     s_hw.tex_uploads++;
 }
-static SDL_GPUShader *ng_shader(const unsigned char *dxil, size_t dxil_size,
+static SDL_GPUShader *ng_shader(const unsigned char *dxbc, size_t dxbc_size,
                                 const unsigned char *spirv, size_t spirv_size,
                                 const char *entry, int vertex, uint32_t samplers, uint32_t uniforms)
 {
     SDL_GPUShaderCreateInfo ci = {0};
-    ci.format = s_ng.active == 12 ? SDL_GPU_SHADERFORMAT_DXIL : SDL_GPU_SHADERFORMAT_SPIRV;
-    ci.code = s_ng.active == 12 ? dxil : spirv;
-    ci.code_size = s_ng.active == 12 ? dxil_size : spirv_size;
+    ci.format = s_ng.active == 12 ? SDL_GPU_SHADERFORMAT_DXBC : SDL_GPU_SHADERFORMAT_SPIRV;
+    ci.code = s_ng.active == 12 ? dxbc : spirv;
+    ci.code_size = s_ng.active == 12 ? dxbc_size : spirv_size;
     ci.entrypoint = entry;
     ci.stage = vertex ? SDL_GPU_SHADERSTAGE_VERTEX : SDL_GPU_SHADERSTAGE_FRAGMENT;
     ci.num_samplers = samplers; ci.num_uniform_buffers = uniforms;
     return SDL_CreateGPUShader(s_ng.device, &ci);
 }
-#define NG_SHADER(entry, vertex, samplers, uniforms) ng_shader(ng_##entry##_dxil, sizeof ng_##entry##_dxil, \
+#define NG_SHADER(entry, vertex, samplers, uniforms) ng_shader(ng_##entry##_dxbc, sizeof ng_##entry##_dxbc, \
     ng_##entry##_spirv, sizeof ng_##entry##_spirv, #entry, vertex, samplers, uniforms)
 
-/* RE-SoT: specialize only the generic Vulkan path; existing simple shaders
- * remain cheaper. Full-key equality prevents hash collisions changing math.
- * Constants, texture scales/borders and alpha reference remain uniforms. */
+/* RE-SoT: fxc output for D3D12; hw_compile_src's disk cache covers it. Failure
+ * leaves the entry on its reference program, as on Vulkan. */
+#if RESOT_HW_D3D11
+static SDL_GPUShader *ng_shader_hlsl(const char *body,size_t body_bytes,const char *entry,const char *profile,
+                                     int vertex,uint32_t samplers,uint32_t uniforms)
+{
+    SDL_GPUShaderCreateInfo ci = {0};
+    SDL_GPUShader *shader;
+    ID3DBlob *code = hw_compile_src(body,body_bytes,entry,profile);
+    if (!code) return NULL;
+    ci.format = SDL_GPU_SHADERFORMAT_DXBC;
+    ci.code = (const Uint8 *)ID3D10Blob_GetBufferPointer(code);
+    ci.code_size = ID3D10Blob_GetBufferSize(code);
+    ci.entrypoint = entry;
+    ci.stage = vertex ? SDL_GPU_SHADERSTAGE_VERTEX : SDL_GPU_SHADERSTAGE_FRAGMENT;
+    ci.num_samplers = samplers; ci.num_uniform_buffers = uniforms;
+    shader = SDL_CreateGPUShader(s_ng.device,&ci);
+    ID3D10Blob_Release(code);
+    return shader;
+}
+#endif
+/* RE-SoT: the generic combiner path gets its own program on Vulkan and D3D12;
+ * existing simple shaders remain cheaper. Full-key equality prevents hash
+ * collisions changing math. Constants, texture scales/borders and alpha
+ * reference remain uniforms. */
 static uint32_t ng_program_bucket(const uint32_t *words,uint32_t count)
 {
     uint32_t hash=2166136261u;
@@ -409,12 +518,14 @@ static uint32_t ng_program_bucket(const uint32_t *words,uint32_t count)
 }
 static NgTranslatedFragment *ng_specialized_ps(const HwPsConst *pc)
 {
-    uint32_t key[RESOT_PS_SPEC_WORDS],bucket;
+    uint32_t key[RESOT_PS_KEY_WORDS],bucket;
     NgTranslatedFragment *entry;
     static int enabled=-1;
     if(enabled<0) { const char *e=getenv("RESOT_NATIVE_SPECIALIZE"); enabled=!(e && *e=='0'); }
-    if(!enabled || s_ng_compat || s_ng.active!=100) return NULL; /* RE-SoT: driver workaround. */
-    resot_ps_spec_key(key,pc); bucket=ng_program_bucket(key,RESOT_PS_SPEC_WORDS);
+    if(!enabled || s_ng_compat || pc->misc[3]) return NULL; /* RE-SoT: driver workaround; F8 views run in ps_main. */
+    resot_ps_key(key,pc);
+    if(s_ng.active==100) key[RESOT_PS_FLAGS]=0; /* RE-SoT: those stay uniforms in the SPIR-V. */
+    bucket=ng_program_bucket(key,RESOT_PS_KEY_WORDS);
     for(entry=s_ng.spec_ps[bucket];entry;entry=entry->next)
         if(!memcmp(key,entry->key,sizeof key)) return entry;
     entry=(NgTranslatedFragment*)calloc(1,sizeof *entry);
@@ -433,7 +544,7 @@ static NgTranslatedVertex *ng_translated_vs(const uint32_t *words,uint32_t count
     NgTranslatedVertex *entry;
     static int enabled=-1;
     if(enabled<0) { const char *e=getenv("RESOT_NATIVE_TRANSLATE"); enabled=!(e && *e=='0'); }
-    if(!enabled || s_ng_compat || s_ng.active!=100) return NULL; /* RE-SoT: driver workaround. */
+    if(!enabled || s_ng_compat) return NULL; /* RE-SoT: driver workaround. */
     generation=nv2a_vsh_program_generation(); /* RE-SoT: same identity used by the immutable draw pool. */
     if(s_ng.last_translated_vs && s_ng.last_translated_generation==generation)
         return s_ng.last_translated_vs;
@@ -447,6 +558,11 @@ static NgTranslatedVertex *ng_translated_vs(const uint32_t *words,uint32_t count
     entry=(NgTranslatedVertex*)calloc(1,sizeof *entry);
     if(!entry) return NULL;
     entry->lock=SDL_CreateMutex();
+#if RESOT_HW_D3D11
+    if(s_ng.active==12) {
+        entry->source=resot_translate_vertex_dialect(ng_d3d12_vertex_hlsl,words,count,1);
+    } else
+#endif
     entry->source=resot_translate_vertex(ng_translated_vertex_head,words,count);
     if(!entry->lock || !entry->source) {
         if(entry->lock) SDL_DestroyMutex(entry->lock);
@@ -463,9 +579,16 @@ static SDL_GPUShader *ng_vertex_compile(NgTranslatedVertex *entry)
 {
     SDL_LockMutex(entry->lock);
     if(!entry->attempted) {
-        size_t bytes=0; uint32_t *code=resot_compile_vertex(entry->source,&bytes);
-        if(code) { entry->shader=ng_shader(NULL,0,(const unsigned char*)code,bytes,"main",1,0,2); free(code); }
-        if(entry->shader) fprintf(stderr,"[HW native] translated vertex: %u instructions, %zu SPIR-V bytes\n",entry->count,bytes);
+        size_t bytes=0;
+#if RESOT_HW_D3D11
+        if(s_ng.active==12) {
+            bytes=strlen(entry->source);
+            entry->shader=ng_shader_hlsl(entry->source,bytes,"vs_tr","vs_5_1",1,0,2);
+        } else
+#endif
+        { uint32_t *code=resot_compile_vertex(entry->source,&bytes);
+          if(code) { entry->shader=ng_shader(NULL,0,(const unsigned char*)code,bytes,"main",1,0,2); free(code); } }
+        if(entry->shader) fprintf(stderr,"[HW native] translated vertex: %u instructions, %zu source/SPIR-V bytes\n",entry->count,bytes);
         if(!entry->shader) fprintf(stderr,"[HW native] vertex translation failed; using reference interpreter\n");
         entry->attempted=1;
     }
@@ -475,6 +598,21 @@ static SDL_GPUShader *ng_vertex_compile(NgTranslatedVertex *entry)
 static SDL_GPUShader *ng_fragment_compile(NgTranslatedFragment *entry)
 {
     SDL_LockMutex(entry->lock);
+#if RESOT_HW_D3D11
+    if(!entry->attempted && s_ng.active==12) {
+        /* RE-SoT: straight-line HLSL; cube slots have their own samplers here. */
+        size_t head=strlen(ng_d3d12_hlsl), cap=head+65536, body;
+        char *text=(char*)malloc(cap);
+        if(text) {
+            memcpy(text,ng_d3d12_hlsl,head);
+            body=resot_ps_emit(text+head,cap-head,"ps_tr",entry->key,4);
+            if(body) entry->shader=ng_shader_hlsl(text,head+body,"ps_tr","ps_5_1",0,8,1);
+            free(text);
+        }
+        if(!entry->shader) fprintf(stderr,"[HW native] fragment translation failed; using reference combiner\n");
+        entry->attempted=1;
+    }
+#endif
     if(!entry->attempted) {
         size_t bytes,optimized_bytes=0;
         const unsigned char *source=ng_ps_specialized_source(entry->key[32]&255,&bytes);
@@ -569,10 +707,15 @@ static void ng_shutdown(void)
 }
 static int ng_init(const char *backend)
 {
-    /* RE-SoT: Vulkan only; D3D12's existing encoder and D3D11 reuse stay as-is. */
+    /* RE-SoT: both native APIs; D3D11 reuse stays as-is. */
     const char *geometry=getenv("RESOT_NATIVE_GEOMETRY_CACHE");
     s_ng.geometry_enabled=!(geometry && *geometry=='0');
     s_ng.geometry_generation=1;
+    {
+        const char *fold=getenv("RESOT_NATIVE_FOLD_CLEARS"), *same=getenv("RESOT_NATIVE_VIS_SAME_PASS");
+        s_ng.fold_clears=!(fold && *fold=='0');
+        s_ng.vis_same_pass=!(same && *same=='0');
+    }
     /* RE-SoT: Android's CWD is the writable app files directory; Windows'
      * is the executable directory. Source equality versions cache entries. */
     resot_shader_cache_init("shadercache");
@@ -698,11 +841,12 @@ static int ng_init(const char *backend)
             SDL_SetError("retail requires reSOT native queries; run tools/setup-native-gpu.ps1"); goto fail;
         }
         s_ng_visibility.device = s_ng.device; s_ng_visibility.api = api;
-        /* RE-SoT: user reports a slowdown after the Vulkan pooling revision;
-         * same-scene A/B has substantial drift and no reproducible pool win.
-         * Restore Vulkan allocation/retirement; D3D12 retains heap reuse.
-         * Developer control can still compare both without dropping queries. */
-        s_ng_visibility.pool_disabled = s_ng.active == 100;
+        /* RE-SoT: the same-scene A/B found no reproducible pool win or loss,
+         * while the only two NVIDIA driver faults (nvoglv64+0xED6415, 2026-10-30)
+         * came with one VkQueryPool created and destroyed per query, ~2400/s.
+         * Not proven the cause: reuse removes that churn from the driver, and
+         * the developer control below still selects the old policy (bit 1). */
+        s_ng_visibility.pool_disabled = 0;
         probe = api->create(s_ng.device);
         if (!probe) goto fail;
         api->destroy(s_ng.device,probe);
@@ -743,6 +887,7 @@ static int ng_init(const char *backend)
 #endif
             s_ng.indices = SDL_CreateGPUBuffer(s_ng.device, &ib);
             s_ng.gpu_vsh = s_ng.uber_vs && s_ng.indices;
+            if (s_ng.gpu_vsh && nv2a_direct_mode()) ng_resident_init(); /* RE-SoT */
             if (!s_ng.gpu_vsh)
                 fprintf(stderr,"[HW native] GPU vertex programs unavailable (%s); CPU interpreter\n",SDL_GetError());
         }
@@ -822,10 +967,12 @@ static NgSurface *ng_surface(void)
     if (!out) out = old;
     if (out->color) ng_flush_draws(); /* RE-SoT: queued draws still own this image. */
     if (out->color) SDL_ReleaseGPUTexture(s_ng.device, out->color);
+    /* The memset below also drops a clear of this image that no pass consumed. */
     if (s_ng.front == out) s_ng.front = NULL;
     if (s_ng.largest == out) s_ng.largest = NULL;
     memset(out, 0, sizeof *out);
     out->offset = off; out->w = w; out->h = h; out->sc = hw_surface_scale(w);
+    out->bytes = s_gpu.pitch * h; /* RE-SoT: footprint for ng_surface_stale */
 
     out->color = ng_image(ng_px(w, out->sc), ng_py(h,out->sc), 0, 1,
         SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM);
@@ -840,8 +987,63 @@ static NgSurface *ng_surface(void)
     }
     return out;
 }
+#if RESOT_RUNTIME_RETAIL
+/* RE-SoT: a cheap fingerprint of the guest RAM a render target covers, as
+ * hw_tex_hash samples a texture: at most 2048 words. */
+static uint32_t ng_surface_ram_hash(const NgSurface *s)
+{
+    const uint32_t *p = (const uint32_t *)((const uint8_t *)xbox_GetMemoryOffset() + s->offset);
+    uint32_t n = s->bytes / 4, step = n > 2048 ? n / 2048 : 1, i, h = 2166136261u;
+    if (!n || !hw_mem_ok(s->offset, s->bytes)) return 0;
+    for (i = 0; i < n; i += step) h = (h ^ p[i]) * 16777619u;
+    return h;
+}
+/* RE-SoT: a texture at a render target's address is sampled from the host
+ * target, which never reaches guest RAM. That is right only while the CPU has
+ * not written there since the GPU drew it. Retail frees and reuses that
+ * memory when a map is loaded (user reports, 2026-10-28: textures flicker,
+ * then stay missing in the dagger area and after Special Load Map until the
+ * app restarts), and the 32 targets were never retired for that: the new
+ * map's texture at the old target's address showed the old host image.
+ * Last writer wins, at frame granularity: the RAM is fingerprinted the
+ * first time the GPU draws the target in a frame, and compared once a frame
+ * when it is sampled. A changed fingerprint retires only the sampling alias:
+ * the completed GPU image can still be the scanout source. */
+static int ng_surface_stale(NgSurface *s)
+{
+    /* RE-SoT: current-frame GPU work is the producer for render-to-texture
+     * effects. Guest RAM can already be prepared for a later submission.
+     * The 2026-10-30 retail Vulkan log repeatedly invalidated 80104000,
+     * including the front image, causing alternating black presentations. */
+    if (s->frame == s_hw.frame) return 0;
+    if (s->ram_checked == s_hw.frame + 1) return s->ram_stale;
+    s->ram_checked = s_hw.frame + 1;
+    if (s->ram_stale) return 1;
+    if (ng_surface_ram_hash(s) == s->ram_hash) return 0;
+    s->ram_stale = 1;
+    {
+        static unsigned told;
+        if (told++ < 16)
+            fprintf(stderr, "[HW native] render target %08X %ux%u rewritten by the CPU:"
+                    " sampled from guest RAM\n", s->offset, s->w, s->h);
+    }
+    /* RE-SoT: ng_texture now decodes the guest image at this address, but
+     * queued draws and presentation retain their completed GPU resource.
+     * ng_surface reuses/evicts it normally; a new GPU write restores its
+     * sampling alias in ng_mark. Never clear front/largest here. */
+    return 1;
+}
+#endif
 static void ng_mark(NgSurface *s)
 {
+#if RESOT_RUNTIME_RETAIL
+    if (s->ram_frame != s_hw.frame + 1) {
+        s->ram_frame = s_hw.frame + 1;
+        s->ram_hash = ng_surface_ram_hash(s);
+        s->ram_checked = 0;
+        s->ram_stale = 0; /* RE-SoT: this GPU producer owns the alias again. */
+    }
+#endif
     s->frame = s_hw.frame;
     if (!s_ng.largest || s->w*s->h >= s_ng.largest->w*s_ng.largest->h) s_ng.largest = s;
 }
@@ -866,6 +1068,71 @@ static int ng_postprocess_source(uint32_t offset)
     }
     return 0;
 }
+/* RE-SoT: a full clear is held until the target's next render pass, as its load
+ * op (ng_take_clears). Anything else that reads the target first calls these,
+ * in guest order: queued draws, which may consume the clear, then the clear. */
+static void ng_settle_color(NgSurface *s)
+{
+    if (!s->clear_pending) return;
+    ng_flush_draws();
+    if (s->clear_pending) {
+        SDL_GPUColorTargetInfo target = {0};
+        SDL_GPURenderPass *pass;
+        target.texture = s->color; target.load_op = SDL_GPU_LOADOP_CLEAR;
+        target.store_op = SDL_GPU_STOREOP_STORE; target.clear_color = s->clear_color;
+        s->clear_pending = 0;
+        pass = SDL_BeginGPURenderPass(ng_cmd(),&target,1,NULL);
+        if (!pass) ng_fail("settle color clear");
+        SDL_EndGPURenderPass(pass);
+        s_ng.stat_passes++;
+    }
+}
+static NgDepth *ng_depth_entry(SDL_GPUTexture *image)
+{
+    uint32_t i;
+    for (i = 0; i < HW_MAX_DEPTHS; i++)
+        if (image && s_ng.depths[i].image == image) return &s_ng.depths[i];
+    return NULL;
+}
+static void ng_settle_depth(SDL_GPUTexture *image)
+{
+    NgDepth *d = ng_depth_entry(image);
+    if (!d || !d->clear_mask) return;
+    ng_flush_draws();
+    if (d->clear_mask) {
+        SDL_GPUDepthStencilTargetInfo ds = {0};
+        SDL_GPURenderPass *pass;
+        ds.texture = image; ds.clear_depth = d->clear_depth; ds.clear_stencil = d->clear_stencil;
+        ds.load_op = (d->clear_mask&1) ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
+        ds.stencil_load_op = (d->clear_mask&2) ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
+        ds.store_op = ds.stencil_store_op = SDL_GPU_STOREOP_STORE;
+        d->clear_mask = 0;
+        pass = SDL_BeginGPURenderPass(ng_cmd(),NULL,0,&ds);
+        if (!pass) ng_fail("settle depth clear");
+        SDL_EndGPURenderPass(pass);
+        s_ng.stat_passes++;
+    }
+}
+/* Load ops of a draw pass: its targets' waiting clears, else their contents. */
+static void ng_take_clears(SDL_GPUColorTargetInfo *ct, SDL_GPUDepthStencilTargetInfo *ds)
+{
+    uint32_t i;
+    NgDepth *d = ng_depth_entry(ds->texture);
+    for (i = 0; i < HW_MAX_SURFACES; i++) {
+        NgSurface *s = &s_ng.surfaces[i];
+        if (s->color == ct->texture && s->clear_pending) {
+            ct->load_op = SDL_GPU_LOADOP_CLEAR; ct->clear_color = s->clear_color;
+            s->clear_pending = 0;
+            break;
+        }
+    }
+    if (d && d->clear_mask) {
+        ds->clear_depth = d->clear_depth; ds->clear_stencil = d->clear_stencil;
+        if (d->clear_mask&1) ds->load_op = SDL_GPU_LOADOP_CLEAR;
+        if (d->clear_mask&2) ds->stencil_load_op = SDL_GPU_LOADOP_CLEAR;
+        d->clear_mask = 0;
+    }
+}
 static SDL_GPUTexture *ng_depth(NgSurface *s)
 {
     NgDepth *depth = NULL;
@@ -884,6 +1151,7 @@ static SDL_GPUTexture *ng_depth(NgSurface *s)
     if (!depth) depth = &s_ng.depths[next++ % HW_MAX_DEPTHS];
     if (depth->image) ng_flush_draws(); /* RE-SoT: preserve queued depth users. */
     if (depth->image) SDL_ReleaseGPUTexture(s_ng.device,depth->image);
+    depth->clear_mask = 0; /* RE-SoT: a clear no pass consumed went with the old image. */
     {
         SDL_GPUDepthStencilTargetInfo ds = {0};
         SDL_GPURenderPass *pass;
@@ -904,10 +1172,6 @@ static SDL_GPUTexture *ng_depth(NgSurface *s)
  * the decoded copy (port/ps5/src/buttons_ps5.c); other textures pass. */
 extern void resot_ps5_texture_decoded(uint32_t *px, uint32_t width, uint32_t height);
 #endif
-#if RESOT_RUNTIME_DEMO
-static uint32_t s_e3_logo[256*64]; /* RE-SoT: the E3 logo texture, upright */
-static int s_e3_logo_ready;
-#endif
 static SDL_GPUTexture *ng_texture(int stage, NgSurface *target)
 {
     const Texture *t = &s_gpu.texs[stage];
@@ -922,11 +1186,17 @@ static SDL_GPUTexture *ng_texture(int stage, NgSurface *target)
             (s->w == t->width && best->w != t->width) ||
             ((s->w == t->width) == (best->w == t->width) && s->frame > best->frame))) best = s;
     }
+#if RESOT_RUNTIME_RETAIL
+    if (best && best != target && ng_surface_stale(best)) best = NULL;
+#endif
     if (best) {
         hw_trace_effect_source(stage,best->offset,best->w,best->h,best->frame); /* RE-SoT */
-        return best == target ? NULL : best->color;
+        if (best == target) return NULL;
+        ng_settle_color(best); /* RE-SoT: sampled, so its clear cannot wait for a pass. */
+        return best->color;
     }
-    if (!hw_mem_ok(t->offset, t->cube ? 6*tex_face_stride(t) : hw_tex_bytes(t))) return NULL;
+    if (!hw_mem_ok(t->offset, t->cube ? 6*tex_face_stride(t) : hw_tex_bytes(t))
+            || !hw_palette_ok(t)) return NULL; /* RE-SoT: bounded palette, see hw_palette_ok. */
     slot = (t->offset >> 6)*2654435761u >> 22;
     for (i = 0; i < 16; i++) {
         NgTexture *e = &s_ng.textures[(slot+i) & (HW_MAX_TEXTURES-1)];
@@ -962,45 +1232,14 @@ static SDL_GPUTexture *ng_texture(int stage, NgSurface *target)
 #if defined(RESOT_PS5_GPU)
     if (!t->cube) resot_ps5_texture_decoded(px, t->width, t->height); /* RE-SoT: PS5 button prompts. */
 #endif
-    /* RE-SoT: the menu font sheet becomes an HD image with the same layout,
-     * made from it (resot_hd_font.h); the image is decoded first so its size
-     * is known before the host image is made. */
+    /* RE-SoT: same HD font and original menu-logo policy as D3D11. */
     {
-        int hd = t->cube ? 0 : resot_hd_font_match(px, t->width, t->height);
-        uint32_t *big = hd ? resot_hd_font_pixels(px) : NULL;
-        if (big) { free(px); px = big; w = RESOT_HD_FONT_W; h = RESOT_HD_FONT_H; }
-        else { hd = 0; w = t->width; h = t->height; }
+        int hd;
+        w = t->width; h = t->height;
+        px = resot_ui_texture_pixels(px, &w, &h, t->cube, &hd);
         if (reuse_image && c->hd != hd) reuse_image = 0;
         c->hd = hd;
     }
-#if RESOT_RUNTIME_DEMO
-    /* RE-SoT: the E3 "Prince of Persia" logo is hidden, at the user's request:
-     * with reSOT's menu entries it was drawn partly past the right edge, and
-     * neither the cause nor its draw was found. Texture 0x0B0044F9 (256x64
-     * BGRA8 in GameInterface, CameraAndGlobal, Menu and _Start_Demo, beside
-     * the GAO E3_WorkInProgress 0x0B0044F7), recognised by the FNV-1a hash
-     * of its decoded pixels, is uploaded fully transparent. Every draw of it
-     * goes, including any menu use. */
-    if (!t->cube && t->width == 256 && t->height == 64) {
-        static unsigned told;
-        uint32_t fnv = 2166136261u;
-        const uint8_t *b = (const uint8_t *)px;
-        size_t k;
-        for (k = 0; k < (size_t)256*64*4; k++) fnv = (fnv ^ b[k]) * 16777619u;
-        if (fnv == 0x72C687A6u) {
-            /* Kept, upright (the sheet is stored bottom-up), for the menu
-             * logo ng_compose draws; then hidden in the game's own draws. */
-            uint32_t row;
-            for (row = 0; row < 64; row++)
-                memcpy(s_e3_logo + (size_t)row*256, px + (size_t)(63 - row)*256, 256*4);
-            s_e3_logo_ready = 1;
-            memset(px, 0, (size_t)256*64*4);
-        }
-        if (told++ < 8)
-            fprintf(stderr, "[LOGO] 256x64 texture %08X: hash %08X%s\n", t->offset, fnv,
-                    fnv == 0x72C687A6u ? ", the E3 logo: hidden" : "");
-    }
-#endif
     if (c->image && !reuse_image) SDL_ReleaseGPUTexture(s_ng.device, c->image);
     if (t->levels > 1 && tex_size_from_format(t->color)) {
         uint32_t extent = w > h ? w : h;
@@ -1171,16 +1410,25 @@ static SDL_GPUGraphicsPipeline *ng_pipeline_build(const NgPipelineKey *key, int 
     return gpu;
 }
 
-static int SDLCALL ng_compiler(void *unused)
+static int ng_compiler_ready(int reference_only)
 {
-    (void)unused;
+    /* References enter at the head, so a translated head means no reference waits. */
+    return s_ngc.head && (!reference_only || (!s_ngc.head->key.translated_vs && !s_ngc.head->key.specialized_ps));
+}
+static int SDLCALL ng_compiler(void *reserved)
+{
+    int reference_only = reserved != NULL;
+#if defined(__ANDROID__)
+    extern void resot_android_thread_cores(int);
+    resot_android_thread_cores(0); /* RE-SoT: compiles may use any core, not the executor's. */
+#endif
     SDL_LockMutex(s_ngc.lock);
     for (;;) {
         NgPipeline *p;
-        while (!s_ngc.quit && !s_ngc.head && !s_ngc.save)
+        while (!s_ngc.quit && !ng_compiler_ready(reference_only) && (reference_only || !s_ngc.save))
             SDL_WaitCondition(s_ngc.cond, s_ngc.lock);
         if (s_ngc.quit) break;
-        if (s_ngc.head) {
+        if (ng_compiler_ready(reference_only)) {
             p = s_ngc.head;
             s_ngc.head = p->job_next;
             if (!s_ngc.head) s_ngc.tail = NULL;
@@ -1206,17 +1454,18 @@ static int SDLCALL ng_compiler(void *unused)
     return 0;
 }
 
-/* RE-SoT: RESOT_ASYNC_PIPELINES=0 compiles on the executor; =1 forces
- * workers. Default on for Vulkan on both hosts: dedicated program compilation
- * must not stall the executor. D3D12 retains its existing default. */
+/* RE-SoT: RESOT_ASYNC_PIPELINES=0 compiles on the executor. Default on for
+ * every native API: fxc takes tens of milliseconds per translated D3D12 program
+ * (see hw_vsp_worker), and dedicated program compilation must not stall the
+ * executor. */
 static void ng_compiler_start(void)
 {
     const char *e = getenv("RESOT_ASYNC_PIPELINES");
     int i;
-#if defined(__ANDROID__)
     s_ngc.async = !(e && *e == '0');
-#else
-    s_ngc.async = e && *e ? *e != '0' : s_ng.active == 100;
+    /* RE-SoT (PS5): the fxc disk cache exists only with the D3D11 backend. */
+#if RESOT_HW_D3D11
+    (void)hw_shader_cache_dir(); /* RE-SoT: settled before the workers read it. */
 #endif
     if (!s_ngc.async && !s_ng_cache_save) return;
     s_ngc.lock = SDL_CreateMutex();
@@ -1224,7 +1473,9 @@ static void ng_compiler_start(void)
     if (!s_ngc.lock || !s_ngc.cond) { s_ngc.async = 0; return; }
     s_ngc.quit = 0;
     for (i = 0; i < (s_ngc.async ? NG_COMPILERS : 1); i++) {
-        s_ngc.thread[i] = SDL_CreateThread(ng_compiler, "resot-pso", NULL);
+        /* RE-SoT: Mali waits for compact keys, not references: nothing to reserve. */
+        s_ngc.thread[i] = SDL_CreateThread(ng_compiler, "resot-pso",
+            s_ngc.async && i == 0 && !s_ng_compact_pipelines ? (void *)&s_ngc : NULL);
         if (s_ngc.thread[i]) s_ngc.running++;
     }
     if (!s_ngc.running) s_ngc.async = 0;
@@ -1290,7 +1541,8 @@ static SDL_GPUGraphicsPipeline *ng_pipeline(const NgPipelineKey *key, int may_de
                 if (s_ngc.tail) s_ngc.tail->job_next = p; else s_ngc.head = p;
                 s_ngc.tail = p;
             }
-            SDL_SignalCondition(s_ngc.cond);
+            /* RE-SoT: a signal could wake only the reserved worker for a translated job. */
+            SDL_BroadcastCondition(s_ngc.cond);
             SDL_UnlockMutex(s_ngc.lock);
         } else {
             p->gpu = ng_pipeline_build(key, 0);
@@ -1361,6 +1613,7 @@ static void ng_constants(NgSurface *s, NgVsConst *vc, HwPsConst *pc, SDL_GPUText
     hw_color4(s_gpu.fog_color, pc->fogc);
     { float r = pc->fogc[2]; pc->fogc[2] = pc->fogc[0]; pc->fogc[0] = r; }
     pc->misc[0] = (uint32_t)s_gpu.rc_seen;
+    pc->misc[3] = (uint32_t)s_hw.batch_debug;
     for (i = 0; i < 4; i++) {
         const Texture *t = &s_gpu.texs[i];
         uint32_t mode = (s_gpu.rc.stage_program >> (5*i))&31;
@@ -1382,6 +1635,54 @@ static void ng_constants(NgSurface *s, NgVsConst *vc, HwPsConst *pc, SDL_GPUText
         tex[i].sampler = tex[i+4].sampler = ng_sampler(t);
     }
 }
+static void ng_resident_init(void)
+{
+    SDL_GPUBufferCreateInfo vb={SDL_GPU_BUFFERUSAGE_VERTEX,NG_RES_VB_BYTES,0};
+    SDL_GPUBufferCreateInfo ib={SDL_GPU_BUFFERUSAGE_INDEX,NG_RES_IB_BYTES,0};
+    SDL_GPUTransferBufferCreateInfo ti={SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,1u<<20,0};
+    s_ng.res_vertices=SDL_CreateGPUBuffer(s_ng.device,&vb);
+    s_ng.res_indices=SDL_CreateGPUBuffer(s_ng.device,&ib);
+    s_ng.res_transfer=SDL_CreateGPUTransferBuffer(s_ng.device,&ti);
+    s_ng.res_transfer_size=ti.size;
+    s_ng.res_generation=1;
+    if(!s_ng.res_vertices || !s_ng.res_indices || !s_ng.res_transfer) {
+        fprintf(stderr,"[DIRECT] no resident buffers (%s): draws stay in the ring\n",SDL_GetError());
+        s_ng.res_vertices=NULL;
+    }
+}
+/* RE-SoT: the run's new resident geometry, before any of its draws. */
+static void ng_resident_flush(void)
+{
+    SDL_GPUCopyPass *copy;
+    uint8_t *mapped;
+    if(!s_ng.res_upload_count) return;
+    if(s_ng.res_upload_bytes>s_ng.res_transfer_size) {
+        SDL_GPUTransferBufferCreateInfo ti={SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,s_ng.res_transfer_size,0};
+        SDL_GPUTransferBuffer *transfer;
+        while(ti.size<s_ng.res_upload_bytes) ti.size*=2;
+        transfer=SDL_CreateGPUTransferBuffer(s_ng.device,&ti);
+        if(!transfer) ng_fail("grow resident staging");
+        SDL_ReleaseGPUTransferBuffer(s_ng.device,s_ng.res_transfer);
+        s_ng.res_transfer=transfer; s_ng.res_transfer_size=ti.size;
+    }
+    mapped=(uint8_t *)SDL_MapGPUTransferBuffer(s_ng.device,s_ng.res_transfer,true);
+    if(!mapped) ng_fail("resident transfer mapping");
+    memcpy(mapped,s_ng.res_upload,s_ng.res_upload_bytes);
+    SDL_UnmapGPUTransferBuffer(s_ng.device,s_ng.res_transfer);
+    copy=SDL_BeginGPUCopyPass(ng_cmd());
+    for(uint32_t i=0;i<s_ng.res_upload_count;i++) {
+        const NgResidentUpload *u=&s_ng.res_uploads[i];
+        SDL_GPUTransferBufferLocation src={s_ng.res_transfer,u->staged};
+        SDL_GPUBufferRegion dst={s_ng.res_vertices,u->vertex_offset,u->vertex_bytes};
+        /* Only offset 0 can be read by a frame in flight (see ng_resident_reserve). */
+        SDL_UploadToGPUBuffer(copy,&src,&dst,u->vertex_offset==0);
+        src.offset=u->staged+u->vertex_bytes;
+        dst.buffer=s_ng.res_indices; dst.offset=u->index_offset; dst.size=u->index_bytes;
+        SDL_UploadToGPUBuffer(copy,&src,&dst,u->index_offset==0);
+    }
+    SDL_EndGPUCopyPass(copy);
+    s_ng.res_upload_count=s_ng.res_upload_bytes=0;
+}
 /* RE-SoT: collect a run of guest draws, upload its vertices once, then
  * keep a native render pass open across compatible draws. Per-draw transfer
  * buffers and copy/render barriers otherwise dominate the initial encoder. */
@@ -1396,15 +1697,24 @@ static void ng_flush_draws(void)
     SDL_GPUGraphicsPipeline *bound_pipeline = NULL;
     const NgDraw *bound_textures = NULL;
     const NgDraw *bound_dynamic = NULL; /* RE-SoT: retain unchanged viewport/scissor/blend within a pass. */
+    SDL_GPUBuffer *bound_vb = NULL, *bound_ib = NULL; /* RE-SoT: ring or resident. */
     /* RE-SoT: expose every cold reference job before waiting for the first.
      * Resolve PSOs before upload/render encoding so compilation never leaves
      * an open guest render pass idle. Only job scheduling changes draw order. */
     SDL_GPUGraphicsPipeline *ready[NG_DRAW_QUEUE];
     uint8_t reference_draw[NG_DRAW_QUEUE] = {0};
+    void *ended_queries[NG_VIS_EVENTS+1]; /* RE-SoT: resolved after their pass. */
+    uint32_t ended_count = 0, next_event = 0;
     uint32_t i;
     void *mapped;
     uint32_t staged;
-    if (!s_ng.queued_count) return;
+    if (!s_ng.queued_count) {
+        for (i = 0; i < s_ng.vis_event_count; i++)
+            ng_visibility_apply(s_ng.vis_events[i].method,s_ng.vis_events[i].value,s_ng.vis_events[i].stamp);
+        s_ng.vis_event_count = 0;
+        return;
+    }
+    s_ng.stat_flushes++;
     ng_boot_stage(8,"first guest queue flush begin"); /* RE-SoT */
     for (i = 0; i < s_ng.queued_count; i++) {
         const NgPipelineKey *key = &s_ng.queued[i].key;
@@ -1479,13 +1789,39 @@ static void ng_flush_draws(void)
     }
     SDL_EndGPUCopyPass(copy);
     }
+    ng_resident_flush(); /* RE-SoT: before any draw of this run reads it. */
     ng_boot_stage(32,"first guest geometry uploaded"); /* RE-SoT */
+    if (s_ng.vis_event_count) {
+        /* RE-SoT: a segment starting inside a pass needs a query reset before
+         * that pass: one per draw position where counting (re)starts. */
+        int counting = s_ng_visibility.enabled;
+        uint32_t need = 0, last = UINT32_MAX;
+        for (i = 0; i < s_ng.vis_event_count; i++) {
+            const NgVisEvent *e = &s_ng.vis_events[i];
+            if (e->method == 0x17CC) counting = e->value != 0;
+            if (counting && e->draw < s_ng.queued_count && e->draw != last) { need++; last = e->draw; }
+        }
+        if (need && !ng_vis_reserve(&s_ng_visibility,ng_cmd(),need)) ng_fail("reserve native visibility queries");
+    }
+/* RE-SoT: ends the open pass: queries end inside it and resolve outside it. */
+#define NG_END_PASS() do { \
+        if (query) { s_ng_visibility.api->end(s_ng.cmd,query->query); ended_queries[ended_count++] = query->query; query = NULL; } \
+        SDL_EndGPURenderPass(pass); \
+        while (ended_count) s_ng_visibility.api->resolve(s_ng.cmd,ended_queries[--ended_count]); \
+    } while (0)
     for (i = 0; i < s_ng.queued_count; i++) {
         NgDraw *draw = &s_ng.queued[i];
         SDL_GPUGraphicsPipeline *pipeline = ready[i]; /* RE-SoT: resolved before encoding. */
-        SDL_GPUBufferBinding vb = {s_ng.vertices,0}; /* RE-SoT: absolute ring ranges also address cached geometry. */
+        SDL_GPUBufferBinding vb = {draw->resident?s_ng.res_vertices:s_ng.vertices,0}; /* RE-SoT: absolute ranges also address cached geometry. */
         uint32_t sampler_count = draw->key.shader >= 5 ? 1 : 8; /* RE-SoT */
         int new_samplers,reference_pipeline=reference_draw[i]; /* RE-SoT */
+        /* RE-SoT: visibility methods between draws close the current segment,
+         * which every report issued after that point counts. */
+        while (next_event < s_ng.vis_event_count && s_ng.vis_events[next_event].draw == i) {
+            const NgVisEvent *e = &s_ng.vis_events[next_event++];
+            if (query) { s_ng_visibility.api->end(s_ng.cmd,query->query); ended_queries[ended_count++] = query->query; query = NULL; }
+            ng_visibility_apply(e->method,e->value,e->stamp);
+        }
         if (!pipeline) continue; /* RE-SoT: no program the driver accepts (counted above). */
         s_ng.reference_draws+=reference_pipeline;
         /* RE-SoT: SDL 3.4.18's D3D12 descriptor writer checks only the
@@ -1499,43 +1835,61 @@ static void ng_flush_draws(void)
             pipeline != bound_pipeline ||
             memcmp(bound_textures->textures,draw->textures,sampler_count*sizeof draw->textures[0]);
         if (new_samplers && ng_sampler_budget(sampler_count)) {
-            if (pass) {
-                if (query) s_ng_visibility.api->end(s_ng.cmd,query->query);
-                SDL_EndGPURenderPass(pass);
-                if (query) s_ng_visibility.api->resolve(s_ng.cmd,query->query);
-                query = NULL;
-            }
+            if (pass) NG_END_PASS();
             pass = NULL; last_color = last_depth = NULL;
             ng_submit_encoded();
         }
-        if (!pass || last_color != draw->color || last_depth != draw->depth) {
+        /* RE-SoT: with no query reset ahead, the only legal place is between passes. */
+        if (!pass || last_color != draw->color || last_depth != draw->depth ||
+            (!query && s_ng_visibility.enabled && !s_ng_visibility.spare_count)) {
             SDL_GPUColorTargetInfo ct = {0};
             SDL_GPUDepthStencilTargetInfo ds = {0};
-            if (pass) {
-                if (query) s_ng_visibility.api->end(s_ng.cmd,query->query);
-                SDL_EndGPURenderPass(pass);
-                if (query) s_ng_visibility.api->resolve(s_ng.cmd,query->query);
-                query = NULL;
-            }
+            if (pass) NG_END_PASS();
             ct.texture = draw->color; ct.load_op = SDL_GPU_LOADOP_LOAD; ct.store_op = SDL_GPU_STOREOP_STORE;
             ds.texture = draw->depth; ds.load_op = ds.stencil_load_op = SDL_GPU_LOADOP_LOAD;
             ds.store_op = ds.stencil_store_op = SDL_GPU_STOREOP_STORE;
+            ng_take_clears(&ct,&ds); /* RE-SoT: no separate pass for a waiting clear. */
             query = ng_vis_prepare(&s_ng_visibility,ng_cmd(),draw->pixel_scale);
             if (s_ng_visibility.failed) ng_fail("prepare native visibility query");
             pass = SDL_BeginGPURenderPass(ng_cmd(),&ct,1,draw->depth ? &ds : NULL);
             if (!pass) ng_fail("draw render pass");
+            s_ng.stat_passes++;
             if (query) s_ng_visibility.api->begin(s_ng.cmd,query->query);
             if (s_ng.indices) { /* RE-SoT: all-cache-hit runs have no new index bytes. */
                 SDL_GPUBufferBinding ib = {s_ng.indices,0}; /* RE-SoT: cached and fresh indices share this generation. */
                 SDL_BindGPUIndexBuffer(pass,&ib,SDL_GPU_INDEXELEMENTSIZE_16BIT);
+                bound_ib = s_ng.indices;
             }
             last_color = draw->color; last_depth = draw->depth;
             bound_pipeline = NULL; bound_textures = NULL; bound_dynamic = NULL;
         }
+        if (!query && s_ng_visibility.enabled) { /* RE-SoT: a new segment in the open pass, from a spare. */
+            query = ng_vis_prepare(&s_ng_visibility,s_ng.cmd,draw->pixel_scale);
+            if (!query) ng_fail("prepare native visibility query");
+            s_ng_visibility.api->begin(s_ng.cmd,query->query);
+        }
         if (pipeline != bound_pipeline) {
             SDL_BindGPUGraphicsPipeline(pass,pipeline);
-            SDL_BindGPUVertexBuffers(pass,0,&vb,1); /* RE-SoT: D3D12 views inherit the selected vertex pitch. */
+            /* RE-SoT: SDL 3.4.18's D3D12 driver rebuilds its vertex view, with
+             * the current pipeline's stride, only when buffer or offset changed.
+             * Binding another offset first marks it without any driver call. */
+            if (s_ng.active == 12) {
+                SDL_GPUBufferBinding other = {s_ng.vertices,128};
+                SDL_BindGPUVertexBuffers(pass,0,&other,1);
+            }
+            SDL_BindGPUVertexBuffers(pass,0,&vb,1);
+            bound_vb = vb.buffer;
             bound_pipeline = pipeline; bound_textures = NULL;
+        } else if (bound_vb != vb.buffer) { /* RE-SoT */
+            SDL_BindGPUVertexBuffers(pass,0,&vb,1);
+            bound_vb = vb.buffer;
+        }
+        if (draw->index_count) { /* RE-SoT */
+            SDL_GPUBufferBinding ib = {draw->resident?s_ng.res_indices:s_ng.indices,0};
+            if (bound_ib != ib.buffer) {
+                SDL_BindGPUIndexBuffer(pass,&ib,SDL_GPU_INDEXELEMENTSIZE_16BIT);
+                bound_ib = ib.buffer;
+            }
         }
         if (!bound_dynamic || memcmp(&bound_dynamic->vp,&draw->vp,sizeof draw->vp))
             SDL_SetGPUViewport(pass,&draw->vp);
@@ -1582,11 +1936,17 @@ static void ng_flush_draws(void)
             SDL_DrawGPUPrimitives(pass,draw->count,1,(s_ng.vertex_offset+draw->offset)/(uint32_t)sizeof(HwVertex),0); /* RE-SoT */
         ng_boot_stage(64,"first guest draw encoded"); /* RE-SoT */
     }
-    if (pass) {
-        if (query) s_ng_visibility.api->end(s_ng.cmd,query->query);
-        SDL_EndGPURenderPass(pass);
-        if (query) s_ng_visibility.api->resolve(s_ng.cmd,query->query);
+    /* Methods after the last draw: the segment still open counts for them. */
+    if (query && next_event < s_ng.vis_event_count) {
+        s_ng_visibility.api->end(s_ng.cmd,query->query); ended_queries[ended_count++] = query->query; query = NULL;
     }
+    if (pass) NG_END_PASS();
+#undef NG_END_PASS
+    while (next_event < s_ng.vis_event_count) {
+        const NgVisEvent *e = &s_ng.vis_events[next_event++];
+        ng_visibility_apply(e->method,e->value,e->stamp);
+    }
+    s_ng.vis_event_count = 0;
     s_ng.vertex_offset += s_ng.queued_bytes; /* RE-SoT: advance after encoding all run draws. */
     s_ng.index_offset += s_ng.queued_index_bytes;
     s_ng.queued_count = s_ng.queued_bytes = s_ng.queued_index_bytes = 0;
@@ -1666,6 +2026,7 @@ static void ng_draw_state(NgSurface *s, SDL_GPUTexture *depth, NgDraw *out)
     key.depth = depth ? 2 | (s_gpu.depth_test ? 1 : 0) : 0;
     key.write = depth && s_gpu.depth_test && s_gpu.depth_mask;
     key.cmp = s_gpu.depth_func;
+    float halo_max_depth = 1.0f;
     key.ccw = s_hw.front_face == 0x901;
     key.cull = s_hw.cull_enable && !s_hw.nocull ? s_hw.cull_face == 0x404 ? 2 : s_hw.cull_face == 0x405 ? 1 : 0 : 0;
 #if RESOT_RUNTIME_RETAIL
@@ -1680,20 +2041,21 @@ static void ng_draw_state(NgSurface *s, SDL_GPUTexture *depth, NgDraw *out)
      * from the demo. No texture heap address is used as material identity. */
     /* RE-SoT: already-LEQUAL and batched final halos still need attenuation;
      * their query probes remain excluded by the shared retail predicate. */
-    if (hw_retail_halo(s->w,s->h,depth != NULL,s_ng_visibility.enabled)) {
+    if (hw_retail_halo(s->w,s->h,depth != NULL,s_ng.vis_queue_enabled)) {
         key.cmp = 0x203; s_ng.flare_depth_draws++;
+        halo_max_depth = hw_halo_max_depth(); /* RE-SoT: same as D3D11. */
         /* RE-SoT: the captured DXT1 image has a soft star-shaped falloff.
          * This material doubles RGB (OCW 0x00010C00) before ONE/ONE and
          * the bloom chain, clipping that falloff into a white disc. Keep
          * its original image and visibility modulation, but reduce only
          * this final halo's emission (net 0.5x texture RGB). This is a
          * presentation adjustment, not a general combiner correction. */
-        out->pc.fac0[0][0] *= 0.25f;
-        out->pc.fac0[0][1] *= 0.25f;
-        out->pc.fac0[0][2] *= 0.25f;
+        hw_halo_emission(out->pc.fac0[0]);
     }
+    else if (hw_retail_halo_probe(s->w,s->h,depth != NULL,s_ng.vis_queue_enabled))
+        halo_max_depth = hw_halo_max_depth(); /* RE-SoT: same as D3D11. */
 #endif
-    vp.x = vp.y = 0; vp.w = (float)ng_px(s->w,s->sc); vp.h = (float)ng_py(s->h,s->sc); vp.min_depth = 0; vp.max_depth = 1;
+    vp.x = vp.y = 0; vp.w = (float)ng_px(s->w,s->sc); vp.h = (float)ng_py(s->h,s->sc); vp.min_depth = 0; vp.max_depth = halo_max_depth;
     sc.x = ng_px(s_gpu.clip_x,s->sc); sc.y = ng_py(s_gpu.clip_y,s->sc);
     sc.w = ng_px(s_gpu.clip_x+s_gpu.clip_w,s->sc)-sc.x; sc.h = ng_py(s_gpu.clip_y+s_gpu.clip_h,s->sc)-sc.y;
     out->key = key; out->vp = vp; out->sc = sc;
@@ -1713,7 +2075,7 @@ static int ng_simple_combiner(void)
 #if RESOT_RUNTIME_RETAIL || RESOT_RUNTIME_DEMO
     static int enabled = -1;
     if (enabled < 0) { const char *e = getenv("RESOT_NATIVE_SIMPLE"); enabled = !(e && *e == '0'); }
-    int eligible = enabled && !s_ng_compat && s_ng.simple_ps && s_ng.simple_alpha_ps && s_gpu.rc_seen && resot_native_simple(
+    int eligible = enabled && !s_ng_compat && !s_hw.batch_debug && s_ng.simple_ps && s_ng.simple_alpha_ps && s_gpu.rc_seen && resot_native_simple(
         s_gpu.rc.control,s_gpu.rc.stage_program,s_gpu.rc.color_icw[0],s_gpu.rc.alpha_icw[0],
         s_gpu.rc.color_ocw[0],s_gpu.rc.alpha_ocw[0],s_gpu.rc.final0,s_gpu.rc.final1,
         s_gpu.alpha_test,s_gpu.alpha_func,s_gpu.texs[0].cube);
@@ -1727,13 +2089,16 @@ static int ng_simple_combiner(void)
  * target-independent NV2A state, not an inferred mesh identity or address.
  * Inline payloads retain the original path; sparse/oversized ranges bypass. */
 static ResotGeometryEntry *ng_geometry_find(const uint8_t *inputs,uint32_t ninputs,uint32_t stride,
-                                           ResotGeometryKey *key)
+                                           const NvDirectDraw *direct,ResotGeometryKey *key)
 {
     uint32_t lo=65535,hi=0,n=s_gpu.idx_count;
-    if(s_ng.active!=100 || !s_ng.geometry_enabled || s_gpu.inline_active || ninputs>8) return NULL;
+    if(!s_ng.geometry_enabled || s_gpu.inline_active || ninputs>8) return NULL;
     memset(key,0,sizeof *key);
     key->primitive=s_gpu.prim; key->inputs=ninputs; key->stride=stride; key->indices=n;
-    for(uint32_t i=0;i<n;i++) { if(s_gpu.idx[i]<lo) lo=s_gpu.idx[i]; if(s_gpu.idx[i]>hi) hi=s_gpu.idx[i]; }
+    /* RE-SoT: a direct record's range was taken from these same indices when it
+     * was made (nv2a_direct_prepare): no walk per draw. */
+    if(direct && direct->count==n) { lo=direct->lo; hi=direct->hi; }
+    else for(uint32_t i=0;i<n;i++) { if(s_gpu.idx[i]<lo) lo=s_gpu.idx[i]; if(s_gpu.idx[i]>hi) hi=s_gpu.idx[i]; }
     for(uint32_t i=0;i<ninputs;i++) {
         const VertexAttr *at=&s_gpu.attr[inputs[i]];
         key->attributes[i][0]=inputs[i];
@@ -1755,6 +2120,98 @@ static ResotGeometryEntry *ng_geometry_find(const uint8_t *inputs,uint32_t ninpu
     return resot_geometry_slot(&s_ng.geometry,key,s_gpu.idx);
 }
 
+/* RE-SoT: the same key the ring cache builds, from a range known in advance. */
+static int ng_resident_key(const uint8_t *inputs,uint32_t ninputs,uint32_t stride,uint32_t lo,uint32_t hi,
+                           ResotGeometryKey *key)
+{
+    memset(key,0,sizeof *key);
+    key->primitive=s_gpu.prim; key->inputs=ninputs; key->stride=stride; key->indices=s_gpu.idx_count;
+    for(uint32_t i=0;i<ninputs;i++) {
+        const VertexAttr *at=&s_gpu.attr[inputs[i]];
+        key->attributes[i][0]=inputs[i];
+        memcpy(&key->attributes[i][1],at,sizeof *at);
+        if(!at->offset || !at->stride || !at->size) {
+            memcpy(key->current[i],s_gpu.imm_attr[inputs[i]],16);
+        } else {
+            uint32_t components=at->size<4?at->size:4;
+            uint32_t bytes=at->type==0 || at->type==6?4:at->type==4?components:
+                at->type==1 || at->type==5?components*2:components*4;
+            uint64_t first=(uint64_t)at->offset+(uint64_t)lo*at->stride;
+            uint64_t span=(uint64_t)(hi-lo)*at->stride+bytes;
+            if(first>UINT32_MAX || span>RESOT_GEOMETRY_MAX_SOURCE ||
+               !hw_mem_ok((uint32_t)first,(uint32_t)span) ||
+               !resot_geometry_span(key,(uint32_t)first,(uint32_t)span)) return 0;
+        }
+    }
+    return 1;
+}
+/* RE-SoT: the entry still describes the guest's bytes. Every byte is compared:
+ * the title owns the vertices and nothing here can see it write them. */
+static int ng_resident_valid(const NvDirectResident *r,const ResotGeometryKey *key)
+{
+    const uint8_t *mem=(const uint8_t *)xbox_GetMemoryOffset();
+    uint32_t at=0;
+    if(!r->source || r->generation!=s_ng.res_generation || memcmp(&r->key,key,sizeof *key)) return 0;
+    for(uint32_t i=0;i<key->spans;i++) {
+        if(memcmp(r->source+at,mem+key->span[i].offset,key->span[i].bytes)) return 0;
+        at+=key->span[i].bytes;
+    }
+    return 1;
+}
+/* RE-SoT: room for one draw's converted geometry; on overflow everything stored
+ * starts again. Queued draws are flushed first, and the next upload at offset 0
+ * cycles the buffers, so frames in flight keep what they read. */
+static int ng_resident_reserve(uint32_t vertices,uint32_t indices)
+{
+    uint32_t vertex_at=(s_ng.res_vertex_used+127u)&~127u;
+    if(vertices>NG_RES_VB_BYTES || indices>NG_RES_IB_BYTES) return 0;
+    if(vertex_at+vertices>NG_RES_VB_BYTES || s_ng.res_index_used+indices>NG_RES_IB_BYTES) {
+        ng_flush_draws();
+        s_ng.res_vertex_used=s_ng.res_index_used=0; vertex_at=0;
+        if(++s_ng.res_generation==0) s_ng.res_generation=1;
+        s_direct_res_resets++;
+    }
+    s_ng.res_vertex_used=vertex_at;
+    if(s_ng.res_upload_bytes+vertices+indices>s_ng.res_upload_cap) {
+        uint32_t cap=s_ng.res_upload_cap?s_ng.res_upload_cap:(1u<<20);
+        while(cap<s_ng.res_upload_bytes+vertices+indices) cap*=2;
+        s_ng.res_upload=(uint8_t *)realloc(s_ng.res_upload,cap);
+        if(!s_ng.res_upload) ng_fail("resident staging");
+        s_ng.res_upload_cap=cap;
+    }
+    if(s_ng.res_upload_count==NG_RES_UPLOADS) ng_flush_draws();
+    return 1;
+}
+/* RE-SoT: keep the guest bytes for the next comparison and queue the upload. */
+static int ng_resident_store(NvDirectResident *r,const ResotGeometryKey *key,uint32_t nv,uint32_t ni,uint32_t stride)
+{
+    const uint8_t *mem=(const uint8_t *)xbox_GetMemoryOffset();
+    uint32_t bytes=0,at=0;
+    NgResidentUpload *u=&s_ng.res_uploads[s_ng.res_upload_count];
+    for(uint32_t i=0;i<key->spans;i++) bytes+=key->span[i].bytes;
+    if(bytes!=r->bytes) {
+        if(s_direct_source_bytes-r->bytes+bytes>NV_DIRECT_SOURCE_BUDGET) return 0;
+        s_direct_source_bytes+=bytes-r->bytes;
+        r->source=(uint8_t *)realloc(r->source,bytes?bytes:1);
+        r->bytes=bytes;
+    }
+    for(uint32_t i=0;i<key->spans;i++) {
+        memcpy(r->source+at,mem+key->span[i].offset,key->span[i].bytes);
+        at+=key->span[i].bytes;
+    }
+    r->key=*key; r->generation=s_ng.res_generation;
+    r->vertex_offset=s_ng.res_vertex_used; r->index_offset=s_ng.res_index_used;
+    r->vertices=nv; r->indices=ni;
+    u->staged=s_ng.res_upload_bytes; u->vertex_offset=r->vertex_offset; u->vertex_bytes=nv*stride;
+    u->index_offset=r->index_offset; u->index_bytes=ni*2;
+    s_ng.res_upload_count++;
+    s_ng.res_upload_bytes+=nv*stride+ni*2;
+    s_ng.res_vertex_used+=nv*stride;
+    s_ng.res_index_used+=(ni*2+3)&~3u;
+    s_direct_res_upload+=nv*stride+ni*2;
+    return 1;
+}
+
 /* RE-SoT: the batch's vertex program runs on the GPU (vs_uber): its distinct
  * vertices go up as their raw input registers (fetch_attr, as the CPU
  * interpreter reads them), the primitive as 16-bit indices. Mirrors
@@ -1772,6 +2229,9 @@ static int ng_draw_program_batch(void)
     ResotGeometryKey geometry_key; /* RE-SoT: full source/format validation. */
     ResotGeometryEntry *geometry=NULL;
     int reused=0;
+    NvDirectDraw *direct=s_ng.res_vertices?g_nv2a_direct_draw:NULL; /* RE-SoT: nv2a_direct.h */
+    int resident=0;
+    ResotGeometryKey resident_key;
     int simple;
     uint8_t *vout;
     uint16_t *iout;
@@ -1787,14 +2247,11 @@ static int ng_draw_program_batch(void)
     pcount = nv2a_vsh_pack_gpu(&words, &inputs, &ninputs);
     if (!pcount) return 0;
     if (hw_skip_shadow()) return 1; /* RE-SoT: same effect policy as D3D11/CPU. */
+    if (hw_debug_begin(hw_debug_flat())) return 1; /* RE-SoT */
     /* RE-SoT: use 1/2/4/8 float4 inputs instead of always uploading eight.
      * This removes unused zero stores and cuts CPU/GPU transfer bytes for
      * small programs; formats still use the exact fetch_attr conversion. */
     slots = ninputs <= 1 ? 1 : ninputs <= 2 ? 2 : ninputs <= 4 ? 4 : 8;
-    /* RE-SoT: SDL 3.4.18 D3D12 caches vertex views by buffer/offset and
-     * does not invalidate their stride on pipeline changes. Keep its fixed
-     * pitch; Vulkan's input stride belongs to the selected pipeline. */
-    if (s_ng.active == 12) slots = 8;
     stride = slots * 16;
     if ((uint64_t)n * stride > HW_VB_BYTES || (uint64_t)n * 6 + 4 > HW_IB_BYTES) return 0;
     /* The same CPU checks hw_draw_program_batch makes: the glow composite's
@@ -1815,9 +2272,11 @@ static int ng_draw_program_batch(void)
         float in[NV2A_VSH_INPUTS][4], lo = 1e9f, hi = -1e9f, top = 1e9f, bottom = -1e9f;
         Nv2aVshOutput o;
         uint32_t k;
+        FetchPlan plan[NV2A_VSH_INPUTS]; /* RE-SoT: fetch_attr's checks once per batch. */
+        for (a = 0; a < ninputs; a++) fetch_plan(&s_gpu.attr[inputs[a]], &plan[a]);
         for (k = 0; k < n; k++) {
             for (a = 0; a < ninputs; a++)
-                fetch_attr(&s_gpu.attr[inputs[a]], s_gpu.idx[k], in[inputs[a]]);
+                fetch_planned(&plan[a], s_gpu.idx[k], in[inputs[a]]);
             if (!nv2a_vsh_run((const float (*)[4])in, &o) || fabsf(o.pos[3] - 1.0f) > 0.0001f)
                 break;
             if (o.pos[0] < lo) lo = o.pos[0];
@@ -1843,8 +2302,29 @@ static int ng_draw_program_batch(void)
     draw = &local;
     ng_constants(s,&draw->vc,&draw->pc,draw->textures);
     ng_boot_stage(4,"first guest textures/constants ready"); /* RE-SoT */
-    geometry=ng_geometry_find(inputs,ninputs,stride,&geometry_key);
-    if(geometry && resot_geometry_match(geometry,&geometry_key,s_gpu.idx,
+    if(direct && direct->resident.changes>NV_DIRECT_MAX_CHANGES) {
+        /* RE-SoT: this list's vertices move: the ring handles those. Retrying one
+         * draw in 64 was tried (retail, 2026-11-02): the ring's share stayed the
+         * same and resident uploads rose fivefold: these vertices change each frame. */
+    } else if(direct && ng_resident_key(inputs,ninputs,stride,direct->lo,direct->hi,&resident_key)) {
+        if(ng_resident_valid(&direct->resident,&resident_key)) {
+            reused=1; resident=1;
+            s_direct_res_hits++;
+            s_direct_res_avoided+=(uint64_t)direct->resident.vertices*stride+direct->resident.indices*2;
+            direct->resident.changes=0; /* RE-SoT: only consecutive changes count. */
+        } else if(ng_resident_reserve(n*stride,n*6)) {
+            resident=2;
+            if(direct->resident.generation==s_ng.res_generation && direct->resident.source) {
+                s_direct_res_changed++; direct->resident.changes++;
+            }
+            else s_direct_res_new++;
+        }
+    }
+    if(direct && !resident) s_direct_res_ring++;
+    if(!resident) geometry=ng_geometry_find(inputs,ninputs,stride,g_nv2a_direct_draw,&geometry_key);
+    if(resident) {
+        /* RE-SoT: neither the ring's hash and index compare nor its generation. */
+    } else if(geometry && resot_geometry_match(geometry,&geometry_key,s_gpu.idx,
             (const uint8_t*)xbox_GetMemoryOffset(),s_ng.geometry_generation)) {
         reused=1; s_ng.geometry.hits++;
         s_ng.geometry.saved_vertices+=geometry->vertices;
@@ -1902,13 +2382,21 @@ static int ng_draw_program_batch(void)
     draw->vc.fogp[0] = s_gpu.fog_param[0]; draw->vc.fogp[1] = s_gpu.fog_param[1];
     draw->vc.fogp[2] = (float)s_gpu.fog_mode; draw->vc.fogp[3] = s_gpu.fog_enable ? 1.0f : 0.0f;
 
-    if(reused) {
+    if(resident==1) {
+        nv=direct->resident.vertices; ni=direct->resident.indices;
+        draw->offset=direct->resident.vertex_offset; draw->first_index=direct->resident.index_offset/2;
+        draw->reused_geometry=1; draw->resident=1;
+    } else if(reused) {
         nv=geometry->vertices; ni=geometry->indices;
         draw->offset=geometry->vertex_offset; draw->first_index=geometry->index_offset/2;
         draw->reused_geometry=1;
     } else {
-    vout = s_ng.queued_vertices + s_ng.queued_bytes;
-    iout = (uint16_t *)(s_ng.queued_indices + s_ng.queued_index_bytes);
+    vout = resident ? s_ng.res_upload+s_ng.res_upload_bytes : s_ng.queued_vertices + s_ng.queued_bytes;
+    /* RE-SoT: a resident draw's indices follow its vertices; their place is known
+     * only once the distinct vertices are counted. */
+    iout = resident ? ng_resident_iout : (uint16_t *)(s_ng.queued_indices + s_ng.queued_index_bytes);
+    FetchPlan plan[NV2A_VSH_INPUTS]; /* RE-SoT: fetch_attr's checks once per batch. */
+    for (a = 0; a < ninputs; a++) fetch_plan(&s_gpu.attr[inputs[a]], &plan[a]);
     if (++batch_id == 0) { memset(stamp, 0, sizeof stamp); batch_id = 1; }
     for (i = 0; i < n; i++) {
         uint16_t ix = s_gpu.idx[i];
@@ -1918,7 +2406,7 @@ static int ng_draw_program_batch(void)
         remap[ix] = (uint16_t)nv;
         slot = (float (*)[4])(vout + (size_t)nv * stride);
         for (a = 0; a < ninputs; a++)
-            fetch_attr(&s_gpu.attr[inputs[a]], ix, slot[a]);
+            fetch_planned(&plan[a], ix, slot[a]);
         for (; a < slots; a++)
             slot[a][0] = slot[a][1] = slot[a][2] = slot[a][3] = 0.0f;
         nv++;
@@ -1954,6 +2442,24 @@ static int ng_draw_program_batch(void)
         break;
     }
 #undef NG_IDX
+    if(resident && ni) {
+        memcpy(vout+(size_t)nv*stride,iout,(size_t)ni*2);
+        if(ng_resident_store(&direct->resident,&resident_key,nv,ni,stride)) {
+            draw->offset=direct->resident.vertex_offset; draw->first_index=direct->resident.index_offset/2;
+            draw->reused_geometry=1; draw->resident=1;
+        } else {
+            /* RE-SoT: over the source budget: this draw has no resident copy, so
+             * it goes in the ring with what was just converted. */
+            ng_queue_reserve(n*stride,n*6+4);
+            s_direct_res_ring++;
+            memcpy(s_ng.queued_vertices+s_ng.queued_bytes,vout,(size_t)nv*stride);
+            memcpy(s_ng.queued_indices+s_ng.queued_index_bytes,iout,(size_t)ni*2);
+            resident=0;
+            draw->offset=s_ng.queued_bytes; draw->first_index=s_ng.queued_index_bytes/2;
+            s_ng.queued_bytes+=nv*stride;
+            s_ng.queued_index_bytes+=(ni*2+3)&~3u;
+        }
+    } else {
     /* RE-SoT: offsets are reserved in this generation before queuing. The
      * single copy pass uploads all misses before any cached/fresh draws. */
     if(ni && geometry && resot_geometry_store(&s_ng.geometry,geometry,&geometry_key,s_gpu.idx,
@@ -1966,6 +2472,7 @@ static int ng_draw_program_batch(void)
     draw->offset=s_ng.queued_bytes; draw->first_index=s_ng.queued_index_bytes/2;
     s_ng.queued_bytes+=nv*stride;
     s_ng.queued_index_bytes+=(ni*2+3)&~3u;
+    }
     }
     if (ni) {
         uint32_t cgen = nv2a_vsh_constant_generation(), pgen = nv2a_vsh_program_generation();
@@ -2011,6 +2518,7 @@ static void ng_blit(SDL_GPUTexture *target_image, SDL_GPUTextureFormat format,
     target.clear_color.a = 1;
     pass = SDL_BeginGPURenderPass(ng_cmd(), &target, 1, NULL);
     if (!pass) ng_fail("blit pass");
+    s_ng.stat_passes++;
     SDL_BindGPUGraphicsPipeline(pass, pipeline);
     SDL_SetGPUViewport(pass, vp);
     if (sc) SDL_SetGPUScissor(pass, sc);
@@ -2047,10 +2555,19 @@ static void ng_clear(uint32_t param)
         ds.store_op = ds.stencil_store_op = SDL_GPU_STOREOP_STORE;
         ds.clear_depth = (float)(hw_zmax_bits() == 65535 ? s_gpu.zstencil_clear&65535 : s_gpu.zstencil_clear>>8)/hw_zmax_bits();
         ds.clear_stencil = s_gpu.zstencil_clear&255;
-        if (x0 == 0 && y0 == 0 && x1 >= s->w && y1 >= s->h) {
+        if (x0 == 0 && y0 == 0 && x1 >= s->w && y1 >= s->h && s_ng.fold_clears) {
+            NgDepth *d = ng_depth_entry(s->depth);
+            /* RE-SoT: the queue is empty here (flushed above), so the next
+             * pass on this image comes after the clear in guest order. */
+            d->clear_mask |= param&3;
+            if (param&1) d->clear_depth = ds.clear_depth;
+            if (param&2) d->clear_stencil = ds.clear_stencil;
+            s_ng.stat_folded_clears++;
+        } else if (x0 == 0 && y0 == 0 && x1 >= s->w && y1 >= s->h) {
             pass = SDL_BeginGPURenderPass(ng_cmd(), NULL, 0, &ds);
             if (!pass) ng_fail("clear depth");
             SDL_EndGPURenderPass(pass);
+            s_ng.stat_passes++;
         } else {
             /* RE-SoT: load-op CLEAR ignores scissor. Draw a depth-only
              * fullscreen triangle through the requested rectangle instead.
@@ -2068,8 +2585,10 @@ static void ng_clear(uint32_t param)
             ds.load_op = ds.stencil_load_op = SDL_GPU_LOADOP_LOAD;
             SDL_GPUGraphicsPipeline *pipeline = ng_pipeline(&key,0);
             if (!pipeline) ng_fail("create depth-clear pipeline");
+            ng_settle_color(s); ng_settle_depth(s->depth); /* RE-SoT: this pass loads both. */
             pass = SDL_BeginGPURenderPass(ng_cmd(),&ct,1,&ds);
             if (!pass) ng_fail("rectangle depth clear");
+            s_ng.stat_passes++;
             SDL_BindGPUGraphicsPipeline(pass,pipeline);
             SDL_SetGPUViewport(pass,&vp); SDL_SetGPUScissor(pass,&sc);
             SDL_SetGPUStencilReference(pass,ds.clear_stencil);
@@ -2086,7 +2605,16 @@ static void ng_clear(uint32_t param)
         hw_color4(s_gpu.clear_color, color);
         sc.x = ng_px(x0,s->sc); sc.y = ng_py(y0,s->sc);
         sc.w = ng_px(x1,s->sc)-sc.x; sc.h = ng_py(y1,s->sc)-sc.y;
-        ng_blit(s->color, SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, NULL, &vp, &sc, 2, (param>>4)&15, color, 0);
+        if (s_ng.fold_clears && (param&0xF0) == 0xF0 && x0 == 0 && y0 == 0 && x1 >= s->w && y1 >= s->h) {
+            /* RE-SoT: same value as ps_solid's finc0, in the image's channels. */
+            s->clear_color.r = color[0]; s->clear_color.g = color[1];
+            s->clear_color.b = color[2]; s->clear_color.a = color[3];
+            s->clear_pending = 1;
+            s_ng.stat_folded_clears++;
+        } else {
+            ng_settle_color(s);
+            ng_blit(s->color, SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, NULL, &vp, &sc, 2, (param>>4)&15, color, 0);
+        }
         ng_mark(s);
     }
     s_gpu.clears++;
@@ -2094,6 +2622,7 @@ static void ng_clear(uint32_t param)
 static void ng_compose(void)
 {
     ng_flush_draws(); /* RE-SoT: snapshot the completed guest surface. */
+    if (s_ng.front) ng_settle_color(s_ng.front); /* RE-SoT: cleared and not drawn since. */
     uint32_t bw, bh, w, h, rect[4], serial;
     const uint32_t *pixels;
     RECT client;
@@ -2167,30 +2696,6 @@ static void ng_compose(void)
     vp.x = px; vp.y = py; vp.w = pw; vp.h = ph; vp.min_depth = 0; vp.max_depth = 1;
     if (s_ng.front)
         ng_blit(s_ng.composed, SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, s_ng.front->color, &vp, NULL, 1, 15, NULL, 1);
-#if RESOT_RUNTIME_DEMO
-    /* RE-SoT: the E3 build's menu showed the "Prince of Persia / The Sands of
-     * Time" logo at the top left (user's screenshot); this demo's menu does
-     * not draw it. While a menu is up (resot_menu_scene 1, main or pause),
-     * the game's own logo texture, kept by ng_texture, is drawn there over
-     * the picture, in the 4:3 frame: x 9..57 %, from 8.5 % down. */
-    {
-        extern int resot_menu_scene(void);
-        if (s_e3_logo_ready && s_ng.front && resot_menu_scene() == 1) {
-            float mw = ph*(4.0f/3.0f), mx = px+(pw-mw)*0.5f;
-            SDL_GPUViewport lv;
-            if (!s_ng.e3logo) {
-                s_ng.e3logo = ng_image(256,64,0,1,SDL_GPU_TEXTUREUSAGE_SAMPLER,
-                                       SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM);
-                ng_upload(s_ng.e3logo, s_e3_logo, 256, 64, 1, 0);
-                fprintf(stderr, "[LOGO] E3 logo drawn over the menu\n");
-            }
-            lv.x = mx + 0.09f*mw; lv.y = py + 0.085f*ph;
-            lv.w = 0.48f*mw; lv.h = lv.w * 64.0f/256.0f;
-            lv.min_depth = 0; lv.max_depth = 1;
-            ng_blit(s_ng.composed,SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,s_ng.e3logo,&lv,NULL,3,15,NULL,0);
-        }
-    }
-#endif
     if (xbox_FramebufferOverlayGet(&pixels, &w, &h, rect, &serial) && w && h) {
         /* RE-SoT: movies often issue no FLIP_STALL; guest FPS cannot measure
          * their presenter. Report compositions, not claimed decoded frames. */
@@ -2237,6 +2742,14 @@ static void ng_compose(void)
 #endif
     }
     else { s_ng.movie_log = 0; s_ng.movie_composes = 0; }
+    /* RE-SoT: F8 Show triggers: over the picture, under the panels. */
+    if (xbox_FramebufferDebugLinesGet(&pixels,&w,&h) && w && h) {
+        if (!s_ng.lines)
+            s_ng.lines = ng_image(w,h,0,1,SDL_GPU_TEXTUREUSAGE_SAMPLER,SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM);
+        ng_upload_cycle(s_ng.lines,pixels,w,h,1,0,1);
+        vp.x = px; vp.y = py; vp.w = pw; vp.h = ph;
+        ng_blit(s_ng.composed,SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,s_ng.lines,&vp,NULL,3,15,NULL,0);
+    }
     if (xbox_FramebufferDebugPanelGet(&pixels,&w,&h) && w && h) {
         float scale = bh/720.0f;
         if (scale < 0.75f) scale = 0.75f;
@@ -2249,6 +2762,17 @@ static void ng_compose(void)
         ng_upload_cycle(s_ng.panel,pixels,w,h,1,0,1);
         vp.x = vp.y = 8*scale; vp.w = w*scale; vp.h = h*scale;
         ng_blit(s_ng.composed,SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,s_ng.panel,&vp,NULL,3,15,NULL,0);
+    }
+    /* RE-SoT: the F8 mode's name, top right, over both game and movies. */
+    if (xbox_FramebufferRenderLabelGet(&pixels,&w,&h) && w && h) {
+        float scale = bh/720.0f;
+        if (scale < 0.75f) scale = 0.75f;
+        if ((w+16)*scale > bw) scale = (float)bw/(w+16);
+        if (!s_ng.label)
+            s_ng.label = ng_image(w,h,0,1,SDL_GPU_TEXTUREUSAGE_SAMPLER,SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM);
+        ng_upload_cycle(s_ng.label,pixels,w,h,1,0,1);
+        vp.x = bw-(w+8)*scale; vp.y = 8*scale; vp.w = w*scale; vp.h = h*scale;
+        ng_blit(s_ng.composed,SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,s_ng.label,&vp,NULL,3,15,NULL,0);
     }
     s_hw.pending_present = 1;
 }
@@ -2294,9 +2818,20 @@ static void ng_present(int sync)
     QueryPerformanceCounter(&before);
     /* RE-SoT: with VSync off and no tearing support, mailbox still lets the
      * game run unthrottled; plain VSync would silently ignore the option. */
-    if (!SDL_WindowSupportsGPUPresentMode(s_ng.device,s_ng.window,mode))
-        mode = !enabled && SDL_WindowSupportsGPUPresentMode(s_ng.device,s_ng.window,SDL_GPU_PRESENTMODE_MAILBOX)
-            ? SDL_GPU_PRESENTMODE_MAILBOX : SDL_GPU_PRESENTMODE_VSYNC;
+    /* RE-SoT: asked once per requested mode and swapchain, not every frame: on
+     * Vulkan with the NVIDIA driver the query enumerates display devices through
+     * GDI, about 13% of the executor's samples in a heavy retail scene
+     * (RESOT_PROFILE_MS, Windows, 2026-11-02). */
+    {
+        static int requested = -1, resolved = -1;
+        if (requested != (int)mode || resolved < 0 || s_ng.present_mode < 0) {
+            requested = (int)mode;
+            if (!SDL_WindowSupportsGPUPresentMode(s_ng.device,s_ng.window,mode))
+                mode = !enabled && SDL_WindowSupportsGPUPresentMode(s_ng.device,s_ng.window,SDL_GPU_PRESENTMODE_MAILBOX)
+                    ? SDL_GPU_PRESENTMODE_MAILBOX : SDL_GPU_PRESENTMODE_VSYNC;
+            resolved = (int)mode;
+        } else mode = (SDL_GPUPresentMode)resolved;
+    }
     if (s_ng.present_mode != (int)mode) {
         ng_submit();
         /* RE-SoT: SDL's composition/present support queries can fail while an
@@ -2336,6 +2871,15 @@ static void ng_flip(void)
     DWORD now;
     if (s_hw.pending_present) nv2a_hw_flush_present();
     EnterCriticalSection(&s_hw.lock);
+    {
+        Uint64 counter=SDL_GetPerformanceCounter();
+        if (s_ng.last_flip_counter) {
+            double ms=1000.0*(double)(counter-s_ng.last_flip_counter)/(double)SDL_GetPerformanceFrequency();
+            if (ms>s_ng.worst_frame_ms) s_ng.worst_frame_ms=ms;
+            s_ng.frames_over_33ms+=ms>33.0; s_ng.frames_over_100ms+=ms>100.0;
+        }
+        s_ng.last_flip_counter=counter;
+    }
     {
         /* RE-SoT: keep new driver-compiled pipelines for the next run; the
          * save is skipped when nothing was created since the last one. */
@@ -2381,6 +2925,19 @@ static void ng_flip(void)
                 s_ng.active == 12 ? "D3D12" : "Vulkan",frames*1000.0/(now-last_log),
                 frames ? (double)(s_hw.draws-last_draws)/frames : 0,(unsigned long long)s_hw.draws,
                 s_ng.gpu_vsh ? "GPU" : "CPU");
+        fprintf(stderr,"[HW native] frame spikes: worst %.1f ms, %u over 33 ms, %u over 100 ms\n",
+                s_ng.worst_frame_ms,s_ng.frames_over_33ms,s_ng.frames_over_100ms);
+        s_ng.worst_frame_ms=0; s_ng.frames_over_33ms=s_ng.frames_over_100ms=0;
+        {
+            /* RE-SoT: what a tile GPU pays for: render passes, not draws. */
+            static uint64_t last_passes,last_flushes,last_submits,last_folded;
+            double per=frames?1.0/frames:0;
+            fprintf(stderr,"[HW native] per frame: %.1f render passes, %.1f queue flushes, %.1f submissions, %.1f clears in load ops\n",
+                (double)(s_ng.stat_passes-last_passes)*per,(double)(s_ng.stat_flushes-last_flushes)*per,
+                (double)(s_ng.stat_submits-last_submits)*per,(double)(s_ng.stat_folded_clears-last_folded)*per);
+            last_passes=s_ng.stat_passes; last_flushes=s_ng.stat_flushes;
+            last_submits=s_ng.stat_submits; last_folded=s_ng.stat_folded_clears;
+        }
         fprintf(stderr,"[HW native] simple combiners: %llu/%llu guest draws\n",
             (unsigned long long)s_ng.simple_draws,(unsigned long long)s_ng.guest_draws); /* RE-SoT: verify coverage, not assumed speedup. */
         fprintf(stderr,"[HW native] geometry cache %s: %llu hits, %llu misses, %llu bypasses, %u source bytes, gen %u, %llu upload bytes avoided\n",
@@ -2444,6 +3001,7 @@ static int ng_readback(uint32_t *dst, uint32_t w, uint32_t h)
     const uint32_t *mapped;
     uint32_t sw, sh, pitch, x,y;
     if (!s_ng.front || !w || !h) return 0;
+    ng_settle_color(s_ng.front); /* RE-SoT: cleared and not drawn since. */
     sw = ng_px(s_ng.front->w,s_ng.front->sc); sh = ng_py(s_ng.front->h,s_ng.front->sc);
     pitch = (sw+63)&~63u; /* RE-SoT: D3D12 texture transfer rows align to 256 bytes. */
     ci.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD; ci.size = pitch*sh*4;
@@ -2454,7 +3012,11 @@ static int ng_readback(uint32_t *dst, uint32_t w, uint32_t h)
     if (s_ng_visibility.pending) ng_submit_encoded(); /* RE-SoT: query fences retain their own ownership. */
     copy = SDL_BeginGPUCopyPass(ng_cmd()); SDL_DownloadFromGPUTexture(copy,&src,&out); SDL_EndGPUCopyPass(copy);
     fence = SDL_SubmitGPUCommandBufferAndAcquireFence(s_ng.cmd);
-    s_ng.cmd = NULL; s_ng.vertex_offset = s_ng.index_offset = 0; s_ng.command_samplers = 0;
+    /* RE-SoT: readback submits commands, it does not retire cached geometry.
+     * Keep append positions, as ng_submit_encoded does. Resetting them here
+     * reused cached offsets after cycling/overwriting their buffers, causing
+     * intermittent distorted geometry and colors during screenshot capture. */
+    s_ng.cmd = NULL; s_ng.command_samplers = 0;
     s_ng.vc_valid = s_ng.pc_valid = 0;
     s_ng.last_cslot = s_ng.last_pslot = -1;
     if (!fence) ng_fail("readback fence");

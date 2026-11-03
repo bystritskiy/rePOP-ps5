@@ -37,6 +37,13 @@ upstream copyright and licence are in `port/third_party/apksig/LICENSE` and
 packaged in the APK as `licenses/LICENSE-apksig.txt`. The jar is resolved by
 Gradle from Google's Maven repository; binary caches are not committed.
 
+**Android retail runtime image (0.5.0).** Local APK builds embed the owner's
+checked NTSC default.xbe inside libresot_retail.so to use EU disc assets with
+the same static recompilation. The build and loader verify its SHA-256. The
+image remains game-owned and outside the MIT licence, just like the image
+embedded in Windows EXEs. No XBE or generated assembly/image output is
+committed. EU BF, sound and video assets still come from the owner's disc.
+
 **Android (`port/android`).** The APK carries the same altered SDL3 3.4.18,
 built from the checked source archive by `tools/setup-android.ps1` (the same
 `port/third_party/sdl-gpu-query/` additions, and the Vulkan query function
@@ -96,6 +103,15 @@ DXVK and D3D11On12 are no longer used by the renderer or included by packaging.
 licence has not been checked here. The build embeds it only when the file is
 present and falls back to Palatino Linotype without it. Check its terms before
 publishing it or an executable that embeds it.
+`port/game/resot_hd_font_<target>.h` (made by `tools/hd-font.py`) holds the
+coverage of letters rendered from this face, and of the user's HD drawings
+of the menu font, compiled into both executables: the same check applies.
+
+`port/game/resot_hd_logo_<target>.h` (made by `tools/hd-logo.py`) holds the
+user's HD image of the game's logo, a trademark. Since v0.4.4 it is published
+with the source at the user's request, as the release builds embed it: the
+game's logo remains its owner's and is not covered by reSOT's MIT licence.
+Without the header the game's own logo is drawn.
 
 **Not covered by any grant here:**
 

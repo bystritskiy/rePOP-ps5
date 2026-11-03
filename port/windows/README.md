@@ -1,14 +1,52 @@
 # reSOT on Windows
 
-Version 0.4.0 adds Special Load Map and Cheats (in reSOT Options), the
-F7 Game behavior section and an HD menu font made from the game's own sheet (Direct3D 12 and Vulkan
-renderers; `RESOT_HD_FONT=0` keeps the original sheet). Version 0.3.4 stops a rejected graphics pipeline from closing the game (Mali
+Version **0.5.0** adds five permanent choices in reSOT Options > Language:
+English, French, Spanish, Deutsch and Italiano. German/Italian use the EU
+disc data; if their sound banks are absent, English is used for that run
+without resetting the preference or removing either choice from the menu.
+Changes apply at the next start.
+
+PAL EU disc data is recognised as **PAL retail (EU)** and can be installed
+from `.iso`, `.xiso` or `.xiso.iso` just like the USA disc. The native retail
+EXE uses its embedded, checked NTSC image with those assets. Movie lookups
+try the original `VIDEO/<file>` first, then EU `VIDEO/30fps/<file>` and
+`VIDEO/25fps/<file>`. The original files are never rewritten. This fixes the
+EU startup's “dirty or damaged” screen caused by a missing movie path.
+Startup, menu, movies and a cave-area save were checked. The full EU game
+has not been replayed; German/Italian checks are recorded in VALIDATION.md.
+
+Other revisions identified as Sands of Time remain launchable with a notice.
+An explicit `RESOT_ASSET_DIR` or remembered `[Launcher] RetailDir` is kept
+ahead of auto-detected folders, including when a known USA disc is also
+installed. This attempts compatible data with the compiled runtime; it does
+not execute an arbitrary XBE or suppress genuine read failures. Build-time
+SHA-256 verification is unchanged.
+
+Windows uses a soft warm-white light halo as its pointer in the launcher,
+native game menus and F7 options, with the click point at its centre. The
+pointer stays hidden during camera control. Each executable embeds a cursor
+extracted at build time from its own `prince.bf` (texture key `0x2E004392`);
+no separate cursor file is needed when playing. Retail appearance confirmed
+by the user; demo built and its embedded cursor loaded, visual check pending.
+
+Version 0.4.4 brings the direct renderer by default, the retail pushbuffers as direct draws,
+game and renderer in parallel, the light halo fix, and drops the launcher's language button
+(the language is in reSOT Options). Version 0.4.3 brings faster Direct3D 11 and 12 shaders, less stutter and the F8 debug views.
+Known issue, to fix: in the retail Magic Fountain teleport the fade to black does not
+appear and the camera stays at the entrance on the bridge until the view is changed.
+Version 0.4.2 brings the HD menu logos, the retail name keyboard fix for the
+mouse and the sand tank HUD fix. `RESOT_HD_LOGO=0` keeps the game's logo.
+Version 0.4.1 carries the retail rendering, crash and loading-hang fixes.
+The Android launcher's logs tip is not here: the Windows version plate is
+not a button, the logs are files in `bin/logs`. Version 0.4.0 adds Special Load Map and Cheats (in reSOT Options), the
+F7 Game behavior section and an HD menu font fitted onto the game's own sheet from the Atlantis MF face (Direct3D 12 and Vulkan
+renderers; `RESOT_HD_FONT=0` keeps the original sheet, `RESOT_HD_FONT=sheet` only enlarges it). Version 0.3.4 stops a rejected graphics pipeline from closing the game (Mali
 reports), releases a stuck D3D wait and brings the definitive logo and the
 animated Prince of Persia title to the launcher. Version 0.3.3 ran the game and the GPU executor in parallel on retail, fixes
 a retail mid-game freeze, reduces audio crackle and brings the new animated
 logo. Version 0.3.2 added Reduced/Standard/Full graphics presets and a background
 stable-release check with optional Update / Close buttons styled like the
-launcher. The displayed version is 0.4.0. Offline/rate-limit errors are ignored.
+launcher. The displayed version is 0.5.0. Offline/rate-limit errors are ignored.
 No game files, logs or settings are uploaded; GitHub receives the normal HTTPS
 request and reSOT version in its User-Agent. Update opens the official release
 page, without downloading/installing an executable automatically.
@@ -81,6 +119,13 @@ installed, both buttons work from either executable. Enter starts the
 focused button (at first, this executable's game), the arrow keys move
 between buttons, Esc closes.
 
+The launcher UI follows the Windows display language when it is English,
+French or Spanish; other languages fall back to English. Game language is
+chosen in reSOT Options > Language: English (1), French (4), Spanish (5),
+Deutsch (3), Italiano (6). It is saved as [Game] Language in resot-options.ini
+and applies on the next start. The demo stays in English. Launcher translation
+and game language are separate.
+
 Without any game, a file dialog asks for the game's Xbox ISO. The launcher
 runs extract-xiso (`port/third_party/extract-xiso`, built into the
 executable and run in a child copy of it) to extract it into a folder named
@@ -103,6 +148,12 @@ when the pad is hidden, retaining its hit area. Contextual Back/Confirm
 buttons appear in menus and cutscenes. These
 floating controls are Android-specific; Windows uses F5 for FPS, mouse or
 controller menu input and right-click Back.
+F8 cycles a debug view on any renderer: normal, No lighting (textures without
+lighting), Vertex (vertex colours, no textures), Show triggers (the normal picture with invisible meshes in vertex colours, and wire
+volumes over it: cyan detection zones of objects with no mesh, green boxes of logic
+objects, magenta boxes of hidden meshes; drawn through walls), and back. Its name
+shows in red at the top right for three seconds, then fades. Nothing is saved: every
+start is normal.
 F6 opens the translucent diagnostics panel. Like F5 it leaves the game
 playable. It shows, twice a second: frame rate and frame time with the
 current graphics settings; executor time (interpreter, draw calls), present
@@ -150,7 +201,7 @@ keyboard/mouse and controller look, including full deflection above 100%;
 the Android counterpart applies the same setting to touch look too.
 F7 Graphics selects `Direct3D 11`, `D3D12 (native)` or `Vulkan (native)`
 after restarting the game. The two native modes use SDL GPU's D3D12/Vulkan
-command encoders, with DXIL/SPIR-V shaders, native GPU resources and GPU draws.
+command encoders, with DXBC/SPIR-V shaders, native GPU resources and GPU draws.
 They do not create a D3D11 device or use D3D11On12/DXVK. Supported NV2A vertex
 programs run on the GPU; unsupported programs retain the CPU interpreter.
 
@@ -201,7 +252,7 @@ redistribute it. Packaging again preserves existing save folders.
 - Visual Studio with the C++ desktop workload (the scripts default to the
   `Visual Studio 18 2026` generator; pass `-Generator` for another)
 - CMake 3.20+
-- Python 3.10+ with `capstone` (`pip install capstone`)
+- Python 3.10+ with `capstone` and `Pillow` (`pip install capstone Pillow`)
 
 The game files go in `Assets/<target>/` first; see "Build from your own Xbox files"
 in the [upstream README](https://github.com/FulGerNet/rePOP#build-from-your-own-xbox-files).
@@ -369,6 +420,13 @@ before game startup enables this optional control. Remove it after testing.
 Windows uses the environment path directly (e.g. the run script's `-Set`).
 This is diagnostic-only; no launcher/options UI or game defaults are changed.
 
+
+The direct renderer path ([docs/DIRECT-RENDERER.md](../../docs/DIRECT-RENDERER.md)) is on by
+default on Direct3D 11, Direct3D 12 and Vulkan since 2026-11-02; `RESOT_DIRECT_DRAW=0`
+returns to the NV2A ring. With it, retail KickOff runs 32 submissions ahead, the game at most two
+frames ahead of the renderer (`RESOT_FLIP_AHEAD=<n>`, 0 = no limit)
+(`RESOT_KICK_AHEAD=<n>` overrides). The log says which: `[DIRECT] mode 1 (default)`.
+A `RESOT_DIRECT_DRAW` key in `resot-options.ini` is not read.
 
 Vulkan reuses input geometry already uploaded into its vertex/index rings
 (2026-10-22), shared with Android. It compares the complete source data,

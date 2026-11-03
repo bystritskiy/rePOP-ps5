@@ -1,5 +1,38 @@
 # Validation log
 
+## PS5 port, 2026-11-03: upstream v0.5.0 merged (01.005.000)
+
+The fork's `dbcb2c2` (cold-pipeline budget, DXT block upload, HD-font cache)
+was reverted first: its budget dropped guest draws rather than deferring
+them, and its DXT path could upload into a victim cache slot of another size
+or format. Then `reSOTv0.5.0` (`7c2a995`, which contains v0.4.4) was merged.
+Conflicts: `ng_texture` keeps the PS5 button-atlas hook before upstream's
+`resot_ui_texture_pixels` (the E3 logo moved there); the fork's README is kept;
+upstream's validation entries follow the PS5 section here.
+
+Changes needed for the PS5 build:
+- `tools/build-native-shaders.py`: upstream now builds DXBC with Windows'
+  `d3dcompiler_47.dll`; off Windows each DXBC array is one zero byte (Vulkan
+  reads only SPIR-V).
+- `ng_compiler_start` calls `hw_shader_cache_dir` only with `RESOT_HW_D3D11`.
+- `nv2a_direct.inc`: the `Interlocked*` counters are `LONG`; `long` is 64-bit
+  on the PS5 and `win32_compat.h` operates on 32 bits.
+- `nv2a_pb_exec.c`: the retail Farah Room door fix and its probe, upstream
+  limited to Windows and Android, are built for `RESOT_PS5` too (retail
+  `target_hooks.c` calls the probe; the link failed without it).
+- `options_android.c`: the Adreno GPU-turbo call is left out on the PS5.
+
+Run on the Mac: `build-native-shaders.py` (the DXC wrapper in `build/deps/dxc`
+was regenerated for this checkout's path), `cmake --build
+build/ps5/game-xbox-retail`, `tools/link-ps5-game.sh xbox-retail`,
+`tools/test-ps5.py`, `tools/test-menu-pointer.py`,
+`tools/tests/test-ps5-inventory.py`: all succeeded. After the merge commit,
+`package-ps5-game.py` (no `--zip`) checked the native imports, exports and
+both FSELFs and staged `build/ps5/app-package/PPSA99023/` (eboot.bin
+54,402,685 bytes). Not done: the demo target, the release zip, anything on
+the console. The PS5 app still accepts only the USA
+`default.xbe`, so v0.5.0's European disc is not supported here yet.
+
 ## PS5 port, 2026-10-29: 01.004.001 on the console
 
 `package-ps5-game.py --zip` from `ce8948a`: `bin/ps5/PPSA99023-01.004.001.zip`,
@@ -246,6 +279,1098 @@ Not checked: sound, controller input in play, saves, levels past
 the first frames, the image (`.ffpfsc`) install path, the demo target on a
 console, and Windows and Android builds of the shared runtime changes
 (`RE-SoT`, under `RESOT_PS5` or with an unchanged non-PS5 path).
+
+## 2026-11-03: v0.5.0, Android EU runtime and five language choices
+
+Android now accepts the known supplied EU retail disc directly. Its installer
+keeps the original EU default.xbe and assets. The launcher marks that disc
+launchable; the native host hashes its default.xbe before selecting an owned
+copy of the checked NTSC image embedded in libresot_retail.so. NTSC still
+uses its disc image. Unknown executable hashes remain rejected on Android;
+the demo's image loading is unchanged. CMake verifies the canonical NTSC hash
+before generating an ignored .S with .incbin; the runtime verifies it again
+before substitution. No executable data is committed.
+
+reSOT Options > Language has five permanent choices on both hosts, regardless
+of disc: English, French, Spanish, Deutsch, Italiano. They are saved as Xbox
+IDs 1, 4, 5, 3, 6. Static analysis of the supported NTSC XBE showed that its
+initializer at 0x00369310 maps only 1/4/5 to Jade 0/1/2. A hand-written
+replacement adds Italian (Xbox 6 -> Jade 3) and German (Xbox 3 -> Jade 4).
+The Jade table at 0x0001F744 selects the italian string at 0x0001F6DB for
+index 3 and german at 0x0001F6E2 for index 4; sound bank selection uses that
+index at 0x000D7C86..0x000D7CAE. The replacement checks the additional
+soundx3/4 FAT/BIG files and falls back to English if absent, retaining the
+requested setting and all five menu rows. This avoids forcing a USA disc
+to open banks it does not contain. Demo language stays English.
+
+Commands and observed results:
+
+- `python tools/check-hlsl.py`: all listed entries passed.
+- `tools/recomp.ps1 -Target xbox-retail -SkipAnalysis`: hash verified;
+  regenerated through the normal pipeline, no seeds changed. 14,416 functions
+  lifted, zero failed. Generated changes remove only the replaced initializer
+  and update the declaration/count metadata. Windows retail build passed.
+- `tools/recomp.ps1 -Target xbox-demo -BuildOnly`: passed. Both Windows
+  EXEs report FileVersion/ProductVersion 0.5.0.
+- `tools/build-android.ps1`: release APK built successfully; the build's
+  signing identity check passed. aapt reports versionName 0.5.0,
+  versionCode 15. APK inspection found the exact 4,603,904-byte NTSC image
+  in its AArch64 retail ELF (machine 183), hash
+  753C58B191279BF4D1A8B28A936DF36AA222ED566487AB1FBDFCD090E91EE379.
+- `python tools/test-android-retail-image.py --eu <supplied EU default.xbe>`:
+  production loader/SHA code passed: NTSC retained, EU replaced with a
+  separate owned canonical buffer, unknown disc rejected, wrong runtime
+  rejected without changing the original allocation.
+- `python tools/test-game-language.py`: actual Android preference code passed
+  five-choice cycling, read/write persistence, invalid-ID rejection and
+  preservation of unrelated INI settings, using minimal UI stubs and no device.
+- Three Windows/Vulkan runs with `[Game] Language=6`, `3`, `6`, respectively,
+  EU, EU, USA assets, and this command (dump basename changed per case):
+
+```powershell
+.\tools\run.ps1 -Target xbox-retail -Seconds 22 -Windowed -Set @{
+  RESOT_ASSET_DIR=$discDirectory
+  RECOMP_PAD_SCRIPT='3000:a:150,6000:a:150,9000:a:150,12000:start:150'
+  RECOMP_FB_WINDOW_DUMP_EVERY='120'
+  RECOMP_FB_DUMP="$root/logs/v050-eu-it.bmp"
+}
+```
+
+EU Italian logs Xbox=6/Jade=3, opens soundx3 and pop_in3; screenshot shows
+"Nuova partita", "Seleziona", "Indietro". EU German logs Xbox=3/Jade=4,
+opens soundx4 and pop_in4, loads the menus and renders the initial Prince
+scene. The final German framebuffer is the scene, not a German menu-text
+capture. USA with Italian selected logs the missing-bank fallback and
+Xbox=6/Jade=0, loads menus and keeps the preference. Evidence is in
+logs/v050-{eu-it,eu-de,usa-it}-{err,out}.txt and corresponding .bmp files.
+The test script restored bin/resot-options.ini byte-for-byte to its saved
+contents (verified), keeping the user's EU launcher selection.
+
+- `adb devices`: no attached devices. Android EU install, launch, languages,
+  audio and gameplay have NOT been run on an Android device. Host loader
+  tests and an APK build are not a claim of device playability.
+- `git diff --check`: passed.
+
+No full EU playthrough or exhaustive language/audio/scene validation was
+performed. The shared implementation is built for Android and Windows;
+Windows language smoke tests do not establish Android runtime results.
+
+## 2026-11-03: EU retail disc assets and launcher recognition
+
+The supplied EU folder and source `.xiso.iso` contain the same 4,141,056-byte
+`default.xbe`, SHA-256
+`F15584C5D259F48A4216259AA2B91755B44D75A04BB12227D1BC6C30262337E2`.
+Its certificate records title ID `0x5553001D` (cert+0x08), region 4
+(cert+0xA0), version 2 (cert+0xAC). The BF is 365,107,200 bytes; USA is
+365,119,488. The ISO's XBE was hashed directly from its XDVDFS root entry.
+REA rejected XBE as an unsupported format; metadata and layout evidence
+came from local Python parsing. `disc_variants.h` contains disc identity,
+not EU code addresses. No seeds, generated C or build-time hashes changed.
+
+Baseline command (PowerShell; `$eu` is the supplied extracted EU directory,
+`$root` is the repository):
+
+```powershell
+.\tools\run.ps1 -Target xbox-retail -Seconds 22 -Windowed -Set @{
+  RESOT_ASSET_DIR=$eu
+  RECOMP_FB_WINDOW_DUMP_EVERY='60'
+  RECOMP_FB_DUMP="$root/logs/eu-baseline.bmp"
+}
+```
+
+Observed: the screenshot shows the game's dirty/damaged-disc screen. The log
+records two failed `video\pop_in0.int` opens (STATUS_OBJECT_NAME_NOT_FOUND).
+The EU disc has VIDEO/30fps and VIDEO/25fps instead of flat movies.
+The shared retail translator now preserves existing flat files, then tries
+30fps and 25fps for missing direct VIDEO leaves. Assets are not modified,
+failed reads are not ignored, and BF corruption is not bypassed.
+
+The Windows launcher names the known disc PAL retail (EU). Other identified
+Sands of Time revisions can be attempted with a compatibility notice. An
+explicit or remembered folder takes precedence over automatic detection,
+even with a known USA disc installed. The local ignored INI selects the EU
+folder; its former contents are in logs/pre-eu-resot-options.ini.
+
+Checks and observations:
+
+- `python tools/check-hlsl.py`: all listed shader entries passed.
+- `tools/recomp.ps1 -Target xbox-retail -BuildOnly` and the same for
+  `xbox-demo`: both Windows executables rebuilt.
+- `python tools/test-retail-disc-path.py --eu <EU folder> --ntsc <USA folder>`:
+  production retail/demo path tests pass (flat priority, 30fps/25fps,
+  absent/nested movies and save isolation). The real launcher detector
+  recognises both hashes, preserves preferred EU/unverified folders, and
+  favours known discs over unverified ones only during automatic selection.
+- EU runtime command:
+
+```powershell
+.\tools\run.ps1 -Target xbox-retail -Seconds 40 -Windowed -Set @{
+  RESOT_ASSET_DIR=$eu
+  RECOMP_PAD_SCRIPT='4000:start:200,7000:a:200,11000:start:200,15000:a:200,18000:start:200,22000:a:200,26000:start:200,30000:a:200'
+  RECOMP_FB_WINDOW_DUMP_EVERY='120'
+  RECOMP_FB_DUMP="$root/logs/eu-video-fix.bmp"
+}
+```
+
+Windows/Vulkan reads startup textures and movies via VIDEO/30fps, loads
+MenuBoot/Menu and resumes an existing cave-area save (3202_Cascade,
+3201_Grotte, then 3203_Bassin in the log). The framebuffer shows the cave.
+Logs are retained in logs/eu-video-fix-err.txt and -out.txt. No damaged-disc
+screen was seen after the fix. This was a bounded smoke check, not a
+full-game playthrough, new-game check, or language/audio validation.
+
+- NTSC regression: same command with USA assets, `-Seconds 20`, input script
+  shortened to its first four entries, and dump named
+  logs/ntsc-disc-regression.bmp. Movies/menu load with no EU fallback;
+  framebuffer shows the menu's Graphics page. Log retained in
+  logs/ntsc-disc-regression-err.txt.
+- `tools/build-android.ps1`: release APK built successfully. EU naming and
+  shared movie fallback compile. No Android device run was performed.
+  Android still requires the checked NTSC default.xbe in the game folder;
+  the EU XBE has different addresses and is rejected. EU data with the
+  user's NTSC XBE is not device-validated (see Android README).
+- `git diff --check`: passed.
+
+Full EU playthrough, all movies, German/Italian choices, saving to EU data,
+other disc revisions and Android EU-data gameplay remain unchecked. Genuine
+read failures retain the game's original failure path.
+
+## 2026-11-03: Windows light-halo cursor
+
+Both Windows targets now use a generated cursor in the launcher, native game
+menus and F7 options. The 48x48 image uses BF texture `0x2E004392`, converts
+additive black to transparency, tints it warm white and centres the hotspot.
+Camera control still hides the pointer. The source texture is 64x64: demo
+BGRA in `1101_Hall_wow_ff0b3977.bin` (BF entry 11), retail BC1 in
+`1501_ReceptionHall_wow_ff0f37b7.bin` (BF entry 177). These are BF keys and
+indices, not XBE addresses. `tools/halo-cursor.py` reads the FAT, decompresses
+the resource stream and writes only ignored build outputs. No external PoP
+tool code or extracted image is published.
+
+Commands: `python tools/check-hlsl.py`;
+`tools/recomp.ps1 -Target xbox-demo -BuildOnly`;
+`tools/recomp.ps1 -Target xbox-retail -BuildOnly`;
+`tools/build-android.ps1`. All passed (build logs: `logs/cursor-demo-build.txt`,
+`logs/cursor-retail-build.txt`, `logs/cursor-android-build.txt`). MSBuild and
+Gradle first failed under sandbox restrictions; the approved reruns passed.
+The independent LZO decoder's complete output for both containers was
+byte-identical to the BF Lab reference decoder, used locally for comparison.
+Windows `LoadLibraryExW` / `LoadImageW` / `GetIconInfo` loaded resource 102
+from both built EXEs and reported cursor hotspots (24,24).
+
+The retail session reached Choose Your Profile; the user confirmed the new
+appearance: "ottimo e perfetto". Demo visual appearance, launcher/F7 visual
+checks, camera/menu transitions, other DPI settings and Android device
+execution were not separately checked in this pass.
+
+
+## 2026-11-02 (late night): RESOT_FLIP_AHEAD default 2
+
+Correction of the v0.4.4 commit and notes, which gave about 140 fps for the heavy scene: that
+figure was measured with KickOff 32 ahead and no flip limit, the configuration that later drew
+the level black. With the one-flip limit the user saw lower frame rates; the logs: heavy
+scene about 84 fps (1,710 draws a frame), empty view about 400 fps (from about 780), the
+title waiting at the flip 16-27% of its samples and the executor idle 31-35%.
+
+RESOT_FLIP_AHEAD=2 (environment, same build), retail, Vulkan, user: "perfetto". Log: about
+700 fps in an empty view, 143 fps at 1,612 draws a frame; the title never waited at the flip
+(0 waits in about 33,000 flips); no black level reported. Now the default.
+
+Not checked: a session past about 40,000 flips (the black level appeared between 40,000 and
+54,000 with no limit): at 2 the limit never engaged in this run, so it is not yet shown to
+prevent that defect. Android, the demo and D3D11/D3D12 not run.
+
+## 2026-11-02 (night): v0.4.4 final builds
+
+KickOff 32 ahead with RESOT_FLIP_AHEAD (title at most one flip ahead of the executor), Vulkan,
+retail, heavy scene, user: black level gone; first version waited 100 ms per frame for flips
+D3D had not submitted (8 fps), fixed by waiting only while the executor has submitted work;
+then the user saw about 140 fps in the heavy scene and, in an empty view, about 780 falling to
+300 fps: the flip limit waited every frame (title waited 30%, executor 45%). Changed after that
+run: KickOff right after the flip token (sub_0036C840); not yet run.
+
+Light halos green or flashing white (user, retail Vulkan, 225%): [HALO-DRAW] factor0 values
+like FF02FEFF. Halo ratio LEQUAL/ALWAYS probe pixels at [light+0x34] (0x000CE3E2..0x000CE417)
+now kept in 0..1 by a wrapper of sub_000CE2C0; built, not yet seen.
+
+Launchers: the game language button is hidden on Windows and Android (reSOT Options only).
+Version 0.4.4, Android versionCode 14. HD menu logo headers now committed. tools/hd-font.py
+rerun on both targets: headers byte-identical to the committed ones.
+
+Checks: python tools/check-hlsl.py ok; tools/recomp.ps1 -Target xbox-retail -SkipAnalysis,
+-BuildOnly both targets and tools/build-android.ps1 built with no errors (logs/rel045-*,
+logs/rel044-*); executables report 0.4.4; aapt: versionCode 14, versionName 0.4.4.
+
+Not checked: Android not installed or run; the demo and D3D11/D3D12 not run with these changes;
+the halo fix, the kick after the flip and the hidden launcher button not seen.
+
+## 2026-11-02 (evening): direct path on by default, executor second pass
+
+At the user's request the direct path is on by default on every renderer and host
+(`nv2a_direct.inc`; `RESOT_DIRECT_DRAW=0` turns it off; the log prints `[DIRECT] mode`).
+Reason seen in the logs: the user's Windows Vulkan runs of 12:21-12:25 had
+`RESOT_DIRECT_DRAW=1` in resot-options.ini, which nothing reads; their logs show
+`KickOff: asynchronous (1 submissions ahead)`, i.e. the direct path off.
+
+Executor changes, from the perf7 profile (retail, D3D12, heavy scene: fetch_attr 10.7%,
+ng_geometry_find 6.4%, memcmp 5.5%, realloc about 1.7% of the executor's samples):
+fetch_attr's checks taken once per draw (`fetch_plan`/`fetch_planned`, D3D11 and native,
+also in the widescreen classification); geometry cache slot hash by words over at most
+about 64 indices; direct records' index range instead of a walk; snapshot buffers grown
+by powers of two.
+
+Checks: `python tools/check-hlsl.py` ok; `tools/recomp.ps1 -BuildOnly` both targets and
+`tools/build-android.ps1` built with no errors (logs/perf9-*-build.txt).
+
+Not checked: nothing was run. No FPS, image or log exists for these builds; D3D11,
+Vulkan and Android have not run the direct path; the demo stays synchronous.
+
+First run of that build, Windows Vulkan, retail, same heavy scene, played by the user
+(bin/logs/xbox-retail-err.txt, RTX 3060): `[DIRECT] mode 1 (default)`, 8 submissions ahead;
+the user saw about 98 fps; the log, 90-97 fps at 1,611 draws a frame, executor 8.1-8.3 ms a
+frame, busy 9.1 s of 10 s; title 0.9-1.2 ms, waiting 1.6 s of 10 s. No defect reported.
+Not an A/B: the earlier figures are D3D12. In the same log only about 350 draws a frame are
+direct indexed tokens (22%; the D3D12 log of the morning has the same share): `[DRAWS]` now
+counts the rest by path (built, not yet run).
+
+Run with `[DRAWS]` (Vulkan, retail, heavy scene, user, 18:16): per 5 s 199k direct indexed,
+438k ring indexed, 84k ring inline, 5k Begin/End immediate; 85 fps at 1,725 draws a frame,
+executor 8.95 ms. RESOT_PROFILE_MS and RESOT_DRAW_CENSUS did not reach that run. Ring indexed
+draws traced statically to RunPushBuffer's copy branch (DIRECT-RENDERER.md); retail now
+replaces it with `NV097_RESOT_DIRECT_PUSHBUFFER`. `tools/recomp.ps1 -Target xbox-retail
+-BuildOnly` built (logs/perf11-retail-build.txt). Not run.
+
+Run of that build (Vulkan, retail, heavy scene, user, 18:25): the user saw 94-100 fps and
+reported no defect. Log: ring indexed draws 0; pushbuffer draws 4.97 M from 343 records,
+0 changed, 0 refused, 0 table full; resident 5.63 M hits, 1 reset, 14.2 MB source; executor
+6.2-6.6 ms a frame (from 8.95), busy 7.2 s of 10 s; 92.6 fps at 1,610 draws a frame in the
+log; title waited 2.0 s of 10 s. The executor is no longer saturated: the limit is elsewhere
+(title thread or GPU), not measured: no profile in that run. Demo and Android built only.
+
+Profiled runs (Vulkan, retail, heavy scene, user, RESOT_PROFILE_MS=1, launched from
+PowerShell): executor 13% in GDI calls under ng_present (NVIDIA Vulkan present-mode query
+every frame), title thread 10% in NtQueryVirtualMemory (guest reads of extended-heap
+objects; 28% in the menu). Changed: the present-mode query only when the requested mode
+or the swapchain changes; guest_probe.h answers extended-heap reads from guest_vmem.c's
+page table. Next run, same scene: present 1.7 -> 0.1 ms a frame, neither cost left in the
+profile, about 101 fps in the log (about 90 before, also profiled); the executor now waits
+39% of its samples: the title thread is the limit. Its largest entries: D3DX matrix
+multiply 0x00352302 (9%) and inverse 0x0035244B (10%, x87). The multiply is now written
+in target_hooks.c (same operations and order); being built. Demo and Android built
+(logs/perf12-*-build.txt), not run.
+
+With it (`tools/recomp.ps1 -Target xbox-retail -SkipAnalysis`, logs/perf13-retail-build.txt;
+calls now go through RECOMP_ICALL_SAFE): 0x00352302 fell from 9% to 0.9% of the title
+thread. Profiled run, user, a heavier spot of the same scene (1,706 draws and 127,000
+vertices a frame against 1,608 and 113,000): 87 fps, executor 7.5 ms; the title waits 34% in
+KickOff and the executor 28% for a kick: they alternate rather than overlap. No defect
+reported. Not checked: the demo has the same routine (0x00293B35) and keeps the lifted one.
+
+## 2026-11-02: v0.4.3 final builds, languages, Android icon
+
+Pull request #19 (GrandaCoder) merged into reSOT from its patch series, read but not
+run, as the user asked. Corrected after the merge: English is the default language on
+Android too (the pull request defaulted it to Spanish there), the demo always reports
+English, and the Windows launcher's left arrow steps back. Retail reSOT Options gained
+a Language page (English 1, French 4, Spanish 5): saved at once, applied at the next
+start. The Android adaptive icon's background is now a square of the launcher's own
+ground (`tools/icon-background.py`, from launcher.c `build_background`), checked as an
+image over the logo with a round mask.
+
+Checks: `python tools/check-hlsl.py` ok; `tools/recomp.ps1 -BuildOnly` both targets and
+`tools/build-android.ps1` built with no errors (logs/rel043-*.txt).
+
+Not checked: none of this was run. No French or Spanish game text, Language page,
+translated launcher or new icon has been seen on a screen; Android not installed.
+
+## 2026-11-02 (later): direct path performance, retail
+
+All runs Windows D3D12, `run.ps1 -Target xbox-retail -Windowed`, `RESOT_DIRECT_DRAW=1`, played by the
+user; the heavy scene is the same place each time (about 1,607 draws a frame). Logs kept as
+logs/perf1..perf7-retail-err.txt.
+
+Measured with `RESOT_PROFILE_MS=1`, after two fixes to the profiler itself: frames are unwound
+with the loader's tables (RtlVirtualUnwind), and the runtime library is built with debug
+information in Release (its static functions were named after the nearest public symbol, such as
+`vsscanf_l` for the renderer). Profiles from before those fixes misattributed samples; the
+RunPushBuffer share read from the first one is not trusted.
+
+| Step | Heavy scene | Title thread | Executor |
+| --- | --- | --- | --- |
+| Start (perf2) | 63-64 fps | 6.8 ms/frame | 9.6 ms/frame |
+| Guest reads without VirtualQuery (perf5) | 66-70 fps | 4.6 ms/frame, 44% waiting | 9.0-9.5 ms/frame, 33% waiting |
+| `RESOT_KICK_AHEAD=8` (perf6) | 85-86 fps; user: 82-88, no defect | 2.0 ms/frame | 9.3-9.6 ms/frame, 17% waiting |
+| Same, as the default (perf7) | 84 fps; user: about 86 | 1.9 ms/frame | 9.1-9.6 ms/frame |
+
+Light scenes reached 130-170 fps (from 75-95 at the start of the day, different places).
+Changes: `port/game/guest_probe.h` (guest RAM and the contiguous window read without a system
+call, as on Android); the direct path's slots without malloc or lock; RunPushBuffer copies
+the buffer behind a token (its message never appeared in these runs: not exercised);
+`RESOT_KICK_AHEAD` default 8 on retail when the direct path is on. Tried and removed:
+retrying resident copies of lists whose vertices changed (uploads up fivefold, no gain).
+
+What limits the heavy scene now: the executor. Of its samples, about 40% are per-draw vertex
+work: `fetch_attr` converting about 113,000 vertices a frame, the ring geometry cache's
+lookup and byte comparison, `memcpy`, and the CPU vertex program run for widescreen
+classification. Half of the direct draws have vertices that change every frame.
+
+Not checked: the demo and Android with these changes (built only); D3D11 and Vulkan.
+
+## 2026-11-02: retail direct path carried over from the demo
+
+Before it, the demo with `RESOT_DIRECT_DRAW=1`: the user played inside a level; the log was clean
+at about 7.9 M draws (user's report of that run).
+
+Changed: `source/xbox-retail/target_hooks.c` now has the demo's whole direct section (70 routines
+wrapped, plus the two KickOffs already replaced), RunPushBuffer wait included, at retail addresses.
+How the addresses were found and the hand checks: [DIRECT-RENDERER.md](DIRECT-RENDERER.md), retail
+section. The alignment found the same instruction shapes in all 76 routine pairs; one pairing was
+wrong (`0x0029C2B0`, now `0x0036DFF0`). DrawVertices has no retail counterpart and is not hooked.
+
+Commands: `tools/recomp.ps1 -Target xbox-retail -SkipAnalysis`: 14418/14420 functions lifted,
+0 failed, built, no warning in `target_hooks.c` (logs/direct10-retail-build.txt).
+`python tools/check-hlsl.py` ok. `tools/build-android.ps1` built the APK with both native
+libraries rebuilt (logs/direct10-android-build.txt). `tools/recomp.ps1 -Target xbox-demo -BuildOnly`
+ok; the demo executable was up to date, the shared runtime having no change in this step
+(logs/direct10-demo-build.txt).
+
+First run, 2026-11-02 11:17-11:19, D3D12, `run.ps1 -Target xbox-retail -Windowed -Set @{RESOT_DIRECT_DRAW='1'}`,
+played by the user: log (logs/xbox-retail-err.txt) closed normally, no crash, no stream-lost or unknown-token line;
+1,146,592 indexed tokens, 0 refused, 0 table full; about 2.85 M draws; 72-96 fps at 278-417 draws a frame;
+KickOff asynchronous, fence pair matched. The user saw it work well, with no defect.
+
+Not checked: retail with the switch off on this build. Android was
+not installed or run; on Android the switch cannot be set yet.
+
+## 2026-11-01: demo vertex programs by token, black picture after the videos
+
+Seen by the user with the rewrites of `0x0029A770` and neighbours: black after the videos. Log: every program
+3 instructions with 0 inputs; `resident: 0 hits`. Cause, seen in the token log: a shader object's body at +0x114 is
+ring packets (`00800B00` headers among the instructions), loaded whole. Change: only the payload is loaded;
+`RESOT_DIRECT_PROGRAMS=0` returns to the captured form. The user reported the demo starts normally after it.
+
+Not checked: how far play went, nor a log read for that run; D3D11, Vulkan, Android.
+
+## 2026-11-01: demo combiners, viewport, programs, clear rewritten by hand (direct path)
+
+The previous build (captured routines), D3D12: the user saw it work; that log was clean at about
+3.17 M draws. Since then rewritten as typed tokens: combiner programs, immediate mode, scissor, clear,
+constants, vertex programs, viewport, stage program. `0x002A55F0` keeps its compiler and has its result
+decoded on the title thread. `tools/recomp.ps1 -Target xbox-demo -SkipAnalysis` built (logs/direct9-demo-build.txt).
+
+Not checked: this build was not run. Still captured, so still NV2A methods at the executor: `0x0029BD20`,
+`0x0029A870`, `0x00299A50`. In the ring: fences, swap, `0x002A2DB0`, device set-up, RunPushBuffer, `0x00299340`,
+`0x00299460`, `0x0029DA80`, the final combiner in `0x002A12F0`. Retail and Android not built with this.
+
+## 2026-11-01: demo state, surfaces and combiners off the ring (direct path)
+
+Fog, with the earlier build, D3D12: the user saw it work ("funziona perfettamente"); that log had
+no stream-lost or unknown-token line. Later hooks: see DIRECT-RENDERER.md for typed, dropped, captured
+and ring routines. `tools/recomp.ps1 -Target xbox-demo -SkipAnalysis` built with no errors
+(logs/direct7-demo-build.txt).
+
+Not checked: this build was not run: no image, FPS or log exists for it. Android and retail were
+not built with these changes. Captured routines still produce NV2A methods; fences and swaps are in the ring.
+
+## 2026-11-01: demo black scene with the direct path, RunPushBuffer
+
+Seen with `RESOT_DIRECT_DRAW=1`, D3D12, twice by the user: 3D went black, UI stayed, with
+`[DIRECT] unknown UP token` and `[PB] walk left physical memory`. The added `[PB] stream lost`
+dump showed JUMP at 0x8002B5B8 to a buffer whose closing JUMP led to 0x8002B7A0, past PUT 0x8002B698.
+Change: the demo's `sub_002A39A0` wrapper kicks and waits for the executor first (direct mode only).
+Inferred, not observed: that a second run repatched the closing JUMP before the first was read.
+
+After: the user reported it solved. That run's log has no stream-lost, unknown-token or walk line,
+at 256,964 array draws (the failures came at about 221,000 and 400,000, so that count alone does
+not exclude the problem). KickOffs rose from about 9,000 to about 30,000-40,000 per 10 s;
+83-104 fps at 414-516 draws a frame against about 125 at 265, different scenes, no A/B.
+
+Not checked: the fix on retail, which does not have it; Android.
+
+## 2026-11-01: direct path, DrawVertices and DrawVerticesUP
+
+Changed, all behind `RESOT_DIRECT_DRAW=1` (default off): demo `0x002A2980` and `0x002A2810`,
+retail `0x003759E0`, now write a token in place of vertex or index words. See
+[DIRECT-RENDERER.md](DIRECT-RENDERER.md), which also lists the D3D routines still using the ring.
+Retail's lifted source has no `0x40001810` constant, so no retail DrawVertices was replaced.
+
+Checks: `python tools/check-hlsl.py` ok. `tools/recomp.ps1 -SkipAnalysis` on both targets
+built with no compiler or linker errors (logs/direct2-demo-build.txt, logs/direct2-retail-build.txt).
+`tools/build-android.ps1` built (logs/direct2-android-build.txt). The retail and demo
+DrawVerticesUP were compared by disassembly.
+
+Not checked: the game was not run with these builds, on any renderer or host, with the switch on
+or off. No image, FPS or token count exists for them. No state, surface, clear, present or query
+call was translated. This log has no earlier entry for the first segment (indexed draws): the
+census counts and observations cited in DIRECT-RENDERER.md have no entry here to back them.
+
+## 2026-10-31: fewer render passes, big cores, GPU turbo (from a study of Pinyon Shift)
+
+Read for comparison: pinyon-shift-android and its ShiftGlue SDK (android-port 2db6813,
+shallow clone outside the repository, no code copied). Its largest gains were per-draw
+caches at about 5000 draws a frame; reSOT has about 300, so its tile-GPU work applies
+instead. Changes, in the native encoder on both targets unless stated (the demo issues no
+visibility queries, so that change does nothing there):
+
+- full clears become the load op of the target's next pass (`RESOT_NATIVE_FOLD_CLEARS=0`);
+- visibility methods stay in the draw queue, with queries inside one pass
+  (`RESOT_NATIVE_VIS_SAME_PASS=0`);
+- log line `[HW native] per frame: ... render passes, ...`;
+- Android: game threads off the little cores (`RESOT_BIG_CORES=0`), and `GpuTurbo=1` in
+  the INI, default off.
+
+Checks: `ctest` in build/tests/native-gpu with `RESOT_GPU_BINDINGS_SMOKE=1` 14/14 (logs/perf-gputest.txt).
+The native suite gained two query segments inside one pass, on D3D12 and Vulkan: 4096 samples
+for the visible draw, 0 for the occluded one, with queries reset before the pass.
+`tools/recomp.ps1 -BuildOnly` both targets and `tools/build-android.ps1` built
+(logs/perf-*-build.txt).
+
+Not checked: the game was not run with these builds on any renderer or host, so no FPS,
+pass count, image or heat result exists. No test covers a folded clear's colour against
+the former solid draw. No device was connected: core selection, turbo and queries inside a
+pass on Adreno or Mali are unseen. Depth stores between passes remain; nothing here reduces them.
+
+## 2026-10-31: v0.4.3, retail Magic Fountain teleport left open
+
+The user confirmed the F8 modes work after the camera offset fix. Open, by the
+user's decision: in the retail Magic Fountain teleport the fade to black does not
+appear, the camera stays at (-475.5,-304.2) on the bridge until the view is changed,
+and on the way back it visibly travels to the Prince. Reported as long-standing.
+
+Observed with temporary traces, now removed: it still happens with V-Sync at 30 FPS.
+Camera GAO key 0xCC000403; zone slots at vars +0x4EC, written by retail sub_00254740
+and cleared by sub_002509A0. While stuck, sub_00207710 (AI key 0x08000010, thousands of
+entries per log interval elsewhere) had zero entries. Track changes go through
+sub_002DF060. No blended 3D full-screen quad was seen in one run. The cause was not
+established, and no flat quad or gamma ramp was ruled out.
+
+Version 0.4.3, versionCode 13; release notes deferred, more additions are planned.
+Checks: `python tools/check-hlsl.py`; `tools/recomp.ps1 -SkipAnalysis` both targets;
+`tools/build-android.ps1`; `ctest` with `RESOT_GPU_BINDINGS_SMOKE=1`.
+Not checked: these final binaries were not run; Android was not tested on a device.
+
+## 2026-10-31: Show triggers, skewed lines and slowness
+
+User screenshot: volumes appear, but as long skew lines, and both targets run very
+slowly. Log: frame spikes up to 1608 ms, 535 demo objects. Causes found: a matrix
+is 0x50 bytes in these XBEs (type at +0x40, retail 0x002FDDE0; demo sub_0008A9F0
+fills camera+0xE0 from camera+0x90), so camera+0xC8 was not the inverse matrix; and
+each field read called VirtualQuery. Now camera+0xE0, type +0x40, remembered readable
+ranges, volumes collected every 6 views, a 960x540 line picture.
+
+Checks: `tools/recomp.ps1 -BuildOnly` both targets, `tools/build-android.ps1`.
+Not checked: not run in the game; whether the lines now fit the scene and the speed
+are unseen. The sign of projected y is still inferred.
+
+## 2026-10-31: F8 Show triggers draws trigger volumes
+
+User report: No lighting and Vertex work well; Show triggers shows no triggers and
+must show their boxes or shapes in colour. The trigger criterion in io_scene_pop,
+pop-bf-lab and Jade Toolkit is the object's name (TEC, trigger) with its bounding
+box; release memory holds no names, so `port/game/resot_triggers.h` classifies by
+content: cyan ZDE zones of objects with no mesh, green bounding boxes of AI objects
+with no mesh, magenta boxes of hidden meshes. No tool code copied. Lines are
+projected on the title thread and rasterised into one 1280x720 picture on all
+three renderers.
+
+Not checked: nothing was run in the game. Layouts come from Jade's source (a later
+engine version), with the world walk, camera argument and projection checked in each
+XBE's disassembly; zone and bounding volume layouts and the projection's signs are
+unverified on these XBEs. `[TRIGGERS]` log lines report what was found. The
+classification will miss triggers that have a mesh or no AI and may show non-triggers
+such as AI markers. Lines ignore depth, on purpose.
+
+## 2026-10-31: F8 debug views
+
+F8 on Windows cycles normal, No lighting, Vertex, Show triggers (`fb_present.c`),
+with the name in red at the top right for 3 s and a 1 s fade. The mode is one
+variable, never written to a file. Show triggers follows the user's definition:
+invisible objects with a 3D mesh, in vertex style. ForceInvisible (GAO+4, 0x00200000)
+is cleared from entry hooks until the visible-list insertion: retail sub_00028370 and
+sub_000DEBC0, demo sub_00021810 and sub_000BFB80. Their mesh data (GEO+0x4C, then +4)
+picks the draws shown in vertex colours.
+
+Checks: `python tools/check-hlsl.py`; `tools/recomp.ps1 -SkipAnalysis` both targets
+(hooks present in `gen/`, 2 lines each in 4 files, nothing else changed there);
+`tools/build-android.ps1`; `ctest` with `RESOT_GPU_BINDINGS_SMOKE=1` 14/14.
+
+Not checked: nothing was run in the game, so no view, the label and its fade have
+been seen on any renderer or target. Known limits by construction: while Show
+triggers is on, shown objects have the Visible status, which AI and collision rays
+can read; skinned or dynamic meshes not drawn from their GEO vertex data stay in
+their material; No lighting and Vertex skip multiplicative and additive passes on
+the display surface. The clip_w/h test for 3D has not been checked against every
+effect. Android has no F8 key (`port/android/README.md`).
+
+## 2026-10-31: user confirmation of the stutter corrections
+
+The user played the builds of 13:22 and reports excellent performance ("piu che
+ottime") on D3D11, Vulkan and the demo. Logs on this PC show retail D3D11 at
+104-161 fps and demo D3D11 at 137 fps in its last window, whose worst frame was
+229 ms (4 over 100 ms; cause not looked at). The Windows logs read here hold no
+Vulkan session after the 13:13 build, so Vulkan rests on the user's report.
+Android was not reported.
+
+## 2026-10-31: stutter corrections extended to D3D11, demo and Vulkan
+
+The user replayed retail on D3D12 ("molto meglio"). Log at 13:18: 93-114 fps,
+executor 3.75-5.78 ms/frame, frame spikes mostly under 40 ms and none over 100 ms
+in the windows read, cold reference waits 7.5 ms in total (683.5 ms before),
+geometry cache 1139043 hits, about 21 GB of uploads avoided. Same scene not
+guaranteed; the audio result rests on the user's report ([APU] still shows 0 starved).
+
+Target by target: the native changes have no target `#if`, so the demo and Vulkan
+already built them at 13:13; the demo issues no visibility queries, so the report
+batching does nothing there. Neither was played. New for D3D11 (both targets):
+report flushes at most every 8 ms with the idle tick forcing the rest, reuse of
+finished occlusion queries, vertex pitch 16/32/64/128 by program inputs, two
+compile workers and `frame spikes` in the log. It already falls back to the
+interpreter while compiling and already had batch reuse.
+
+Checks: `python tools/test-visibility.py` passed (WARP, real queries, with the
+forced flush and a reuse check); `python tools/check-hlsl.py` ok; `ctest` with
+`RESOT_GPU_BINDINGS_SMOKE=1` 14/14; `tools/recomp.ps1 -BuildOnly` both targets and
+`tools/build-android.ps1` built.
+
+Not checked: no test draws through the D3D11 compact vertices, and the game was
+not run with these builds, so D3D11 geometry and timing are unseen. Demo on any
+renderer, Vulkan and Android were not played with these changes.
+
+## 2026-10-31: retail D3D12 stutter in effect-heavy scenes
+
+User report on the combiner-translation build: no graphical faults on D3D12, but
+FPS drops, visual stutter and audio stutter where there are many effects.
+`bin/logs/xbox-retail-err.txt` (13:06, RTX 3060, i7-9700K, VSync off, no limit):
+135 fps and executor 2.94 ms/frame early; then 63-97 fps with executor 6-8 ms,
+320-390 draws/frame, ~100k vertices/frame and 9414 queries in 5 s. One 5 s window
+had executor 24.72 ms with 72 cold reference waits totalling 555 ms, while
+49 `vs_tr` compiles took 4815 ms on the two shared workers. Geometry cache:
+0 hits of 1112767 draws, disabled on D3D12. `[APU]` lines report 0 starved,
+late 0, block max 1.7 ms in every window, so the host audio output was not seen
+starving; the cause of the audible stutter is not established.
+
+Changes: a third pipeline worker reserved for reference jobs; translated D3D12
+vertex programs parse only the vertex half; compact vertex stride and the geometry
+cache on D3D12 (`SDL_BindGPUVertexBuffers` with another offset first refreshes
+SDL's view stride); visibility reports no longer submit each (at most every 8 ms,
+with presentation and the window thread's idle tick covering the rest). The FPS
+log gains `frame spikes` (worst frame, frames over 33 and 100 ms). The batching
+and the worker apply to Vulkan and Android too.
+
+Checks: `python tools/check-hlsl.py` ok; `ctest` with `RESOT_GPU_BINDINGS_SMOKE=1`
+14/14. `vertex_program_direct3d12` draws after a stride change inside a pass;
+removing the extra bind made it fail (`covered > 0`), and restoring it passed.
+`tools/recomp.ps1 -BuildOnly` both targets and `tools/build-android.ps1` built.
+
+Not checked: the game was not run with these builds, so no FPS, stutter or
+audio improvement is claimed. Report latency in play (halo fades) was not seen;
+Android and Vulkan were built, not run in play. `native_vulkan` without the smoke
+variable passed in 105.96 s.
+
+## 2026-10-31: combiner translation on D3D11 and D3D12, D3D12 vertex translation
+
+D3D11 and D3D12 draw each combiner state with its own straight-line shader
+(`resot_native_combiner.h`, compared with Black's per-state `PixelHlsl`; no Black
+code copied). D3D12 translates vertex programs too, compiles on the background
+pipeline workers by default, and moved from DXIL to DXBC SM 5.1: the first
+attempt failed with `STATE_CREATION ERROR #1046`, a pipeline cannot mix the two.
+All three APIs share a canonical combiner key.
+
+Checks: `python tools/check-hlsl.py` ok. `ctest --test-dir build/tests/native-gpu
+-C Release` with `RESOT_GPU_BINDINGS_SMOKE=1`: 14/14 in 32.86 s, including
+`native_direct3d12`, whose new `test_combiner_translate.inc` compares 400 random
+states with `ps_main`, pixel by pixel within one byte on this PC's GPU (112 of
+them compiled without a discard), and compiles each for `ps_4_0`. A deliberate
+error in the emitter failed it at case 3. `vertex_program_direct3d12` passed its
+112 translated/reference comparisons through fxc. `native_vulkan` without that
+variable: passed in 106.14 s. `tools/recomp.ps1 -BuildOnly` both targets and
+`tools/build-android.ps1`: built.
+
+Not checked: the game was not run with these builds on any renderer, so no FPS
+gain, hitch change or picture is claimed in demo or retail. D3D11 pixels were
+compiled, not drawn, by the test. `RESOT_ASYNC_PIPELINES` on D3D12 had no
+concurrent-compile test. Android shares only the canonical key and was built,
+not run.
+
+## 2026-10-31: v0.4.2
+
+The user confirmed the retail HD logo and the name keyboard ("ottimo funziona").
+The demo logo, 6201_PrisonA and the sand column were not reported on. Version
+0.4.2, Android versionCode 12. Final checks: `python tools/check-hlsl.py`;
+`python tools/test-menu-pointer.py`; `python tools/test-native-surface-alias.py`;
+`ctest -R retail_forming_tank_layout`; `tools/recomp.ps1 -BuildOnly` both targets
+and `tools/build-android.ps1` (`logs/v042-*`). The agent did not run the game.
+
+## 2026-10-31: demo HD menu logo
+
+`python tools/hd-logo.py xbox-demo <image>` fits the user's white 6928x1732
+`demologohd.png` to 1024x256 (ignored `port/game/resot_hd_logo_xbox_demo.h`).
+`resot_hd_logo.h` replaces texture 0x0B0044F9 by its exact hash, in menus only;
+in play the existing rule still hides it. The draw's yellow tint is kept.
+
+Checks: `tools/recomp.ps1 -BuildOnly` both targets, `tools/build-android.ps1`
+(`logs/demologo-*-build.txt`). Not checked: the game was not run with these
+builds, so the logo has not been seen on any renderer or on Android.
+
+## 2026-10-31: demo 6201_PrisonA, Prince only a head
+
+User report: the Special Load Map entry shows the Prince as a head. The user's
+log (`bin/logs/xbox-demo-err.txt`) merges only 6201_PrisonA, 6201_PrisonB and
+6201_CouloirHaut for 0x2200E124, with no PrinceCostume0N and no Prince set-up
+line. The BF's WOL has 12 dependencies against the 17 of the 08_GP62 maps.
+08_GP62_E3_Cour (0x0F0053EF) merges the same areas with 08_GP62_Prison and
+PrinceCostume05, and set the Prince up (`logs/history/20261028-000147-167-4868`
+"costume 3 not loaded, PrinceCostume05 instead"). The menu entry now loads that
+key, the same treatment as retail's maps without a usable checkpoint.
+
+Checks: `tools/recomp.ps1 -Target xbox-demo -BuildOnly`, `tools/build-android.ps1`
+(`logs/prison-*-build.txt`). Not checked: the game was not run with this build;
+the spawn point and any scripted E3 content of this map in place of a plain
+Prison A start.
+
+The demo's logo (texture 0x0B0044F9, 256x64, in GameInterface and four other
+worlds) was exported with the PoP BF Lab reader, used as a tool only, to the
+user's Desktop; its FNV matches the runtime's 0x72C687A6 upright. Not committed.
+
+## 2026-10-31: retail HD menu logo, pointer on the name keyboard
+
+**Logo.** `tools/hd-logo.py` fits the user's `logomenu.png` (1018x255, kept in
+ignored `Assets/ui/`) to 1024x256 in the ignored
+`port/game/resot_hd_logo_xbox_retail.h`. `resot_hd_logo.h` swaps it for the
+256x64 ARGB logo texture on all encoders. The original pixels' hash was never
+logged, so the texture is recognised by coverage against the image (at most 0.6
+difference, upright or upside down). That threshold is a choice, not measured
+against the real texture: the first run's `[HDLOGO]` lines give the value.
+
+**Name keyboard.** The pointer bridge pressed only up/down, by child order. The
+grid is built in nested loops (0x002C5FB0..0x002C7072, 19 choices in
+`logs/retail-menu-trace-err.txt`), so that could not leave a column, which fits
+the report. Retail pages with 12 or more choices now walk to the row, then along
+it. Inferred statically: no `RESOT_POINTER_TRACE` of this page exists, and that
+this grid is the profile-name keyboard the user means, and that its cells answer
+left/right, were not observed.
+
+Checks: `python tools/test-menu-pointer.py` passes both layouts (synthetic 4x3
+grid: click, leftward click, hover); `tools/recomp.ps1 -BuildOnly` for both
+targets and `tools/build-android.ps1` build (`logs/hdlogo-*-build.txt`).
+
+Not checked: the game was not run with these builds, so neither the logo on
+screen nor typing a name has been seen on Windows or Android. The demo's
+keyboard is unchanged and not traced.
+
+## 2026-10-31: retail sand column stays at the HUD edge past y=240
+
+The user reported empty forming rings and, after many upgrades, full sand tanks
+back in the old centred 4:3 position. Existing traces
+(`logs/history/20261020-144739-536-12584-xbox-retail-err.txt`, four tanks, 16:9)
+show tanks every 21 px from y=104.531, x=109.931..141.531, and the ring below
+the last one at y=190.865..207.198. Only y<=192, the forming-tank exception
+(bottom<=240) and top>=288 were classified as HUD, so by that spacing the
+seventh tank and the ring after six tanks fall in the gap. This is computed
+from the spacing: no trace with more than four tanks exists.
+
+`nv_hw_retail_sand_column` (`nv2a_hud_layout.h`) now anchors blended ARGB 64x32,
+32x32 and 16x16 pieces in that column, at any height, on all encoders. Retail
+only. The same traces hold opaque 32x32 quads and 128x128 DXT quads in this
+column, which the rule rejects.
+
+Checks: `python tools/check-hlsl.py`; `ctest --test-dir build/tests/native-gpu
+-C Release -R retail_forming_tank_layout` passes (17 column positions at four
+ratios); `tools/recomp.ps1 -Target xbox-retail -BuildOnly` and
+`tools/build-android.ps1` build (`logs/hud-column-*-build.txt`).
+
+Not checked: the game was not run with this build, so the move itself has not
+been seen; the real number of tanks and whether the column keeps this spacing
+beyond four; other flat blended UI with these texture sizes in this column
+(for example menus); the demo, unchanged and not traced in this state. xbox-demo
+was not rebuilt, since its code is under `RESOT_RUNTIME_RETAIL`.
+
+## 2026-10-31: retail light halos, candidate and evidence
+
+User reports: on D3D11 no torch or lantern shows a halo; on Vulkan only some do, they
+flash, and they vanish as the camera moves.
+
+Read: 0x000CE2C0 draws an ALWAYS and a LEQUAL probe for each light and keeps
+LEQUAL/ALWAYS as its ratio; 0x000CE780 passes it to the final quad. Both hosts force that
+quad to LEQUAL (an earlier user-requested correction). Implemented and built, not
+run: that test is compared at a depth pulled up to 1.5 units nearer the camera
+(`hw_halo_max_depth`, `RESOT_HALO_DEPTH_PULL=0` disables), and `[HALO-REPORT]` and
+`[HALO-DRAW]` samples on all renderers. Not established: why D3D11 shows none.
+
+User test of that build: still none on D3D11; on Vulkan only some lights, not those
+beside them. Logs: the same probe counts appear on D3D11 and Vulkan (for example
+5227/4296, 16093/12290), so the queries work on both. Many pairs read n/0 or 0/0, which
+makes the ratio 0. 0x00067DA1 multiplies the light colour by flicker and ratio, so
+factor0 ranged from FF000000 and FF20140B to FFCBFFFF. Second candidate, built, not run:
+the LEQUAL probe gets the same depth pull as the final quad, and dim halos are raised
+by a square root (`hw_halo_emission`, same peak as the old 0.25). `[HALO-DRAW]` and
+`[HALO-REPORT]` now list every light of one frame each 600 flips. Still not established:
+why D3D11 shows none.
+
+## 2026-10-31: Farah Room gate evidence, Vulkan driver fault, query reuse
+
+Neither problem is claimed fixed. No gameplay was run by the agent.
+
+Farah Room door: the user confirms both leaves visible with the stale-alpha build
+on D3D11 (screenshot). Vulkan, D3D12, Android and other scenes are not checked.
+
+User test `RESOT_GATE_TINT=1`, D3D11: no magenta, so the door is rejected, not merely
+dark. The 09:32 log shows the door still drawn near the camera (w 4.3..9) with diffuse
+1,1,1,0.407843 (also 0.94902 and 1 in earlier samples). With t0.a * v0.a the alpha is
+at most 104, below ALPHA_REF 0x80, so the test rejects every pixel; this fits the
+report. Whether attribute 3 is the source was inferred, not read: the log adds it now.
+Candidate correction, implemented and built, NOT confirmed in game: an opaque
+alpha-tested batch with no colour array and combiner alpha t0.a * v0.a uses current
+diffuse alpha 1 for that draw (`stale_diffuse_alpha`, nv2a_pb_exec.c);
+`RESOT_STALE_ALPHA=0` disables it, `[STALE-ALPHA]` lists each affected texture. Not
+established: why the console would not see the same value.
+
+Correction after the user's D3D11 screenshot in front of the door: the side panels
+are also dark and the background behind the door is bright, so a near-black lattice
+would be visible. The dark material colour does not explain the missing door. The
+user also reports the order vizier, doors, curtains, so the curtains are behind the
+doors from that side and should not occlude them. Offline, the BF mesh 3F001EC3 with its
+102 indices and the bound texture rasterizes to a complete door (51% of pixels above
+alpha 128), with an ornament like the side panels: mesh, UV and texture are coherent.
+The logged door draws cover only about the first 8 s in the room, not the moment
+in front of the door. Added and built, not run: door draw samples about every 4 s and
+a door state line every 300 polls.
+
+Gate, observed in the 17:21 log (`bin/logs/history/20261030-174543-272-13060-*-err.txt`;
+the current `xbox-retail-err.txt` has no `GATE` line):
+- Combiner: ICW 08010000/18140000, OCW 00010C00/00000C00, factor0 FF101010,
+  final 130C0300/00001C80. So r0.rgb = 2 * t0.rgb * factor0, r0.a = t0.a * v0.a,
+  colour = lerp(fog, r0, fog.a), alpha = r0.a. The alpha expression is correct
+  (diffuse alpha 1, test GREATER 0x80), so this expression does not reject the door.
+- The door is dark by data, not by the renderer: BF material 3F001ED3 holds colour
+  66101010 and flags 4017 (ColorOp in bits 13-15 for material version 6 = 2; the
+  bits 12-15 conversion at 0x0032C712 runs only for version <= 4). Case
+  0x0030DC85 reads material+8 & 0xFFFFFF, and 0x0030DD0D sets alpha FF. The other
+  submaterials read from pack 3F001EE9 hold E5E5E5; that this explains the bright side panels is inferred.
+  Result: 0.125 * the gold texture, near black. Not checked: how this looks on
+  an original console, and whether near black is what the user sees.
+- Curtain quads 6600D76B/C use meshes 6600D738/39 and pack 66007DB2. Its submaterial
+  66007DAC holds the same gold texture with colour 0F0F0F, flags 4417, alpha ref
+  0x19. Which submaterial these quads use, and their depth writes, was not read.
+- Mip chain tested and rejected: box filtering the texture keeps its mean alpha at
+  0.39 and 36-59% of texels above 128 down to 16x16 (8x8 and below were not
+  meaningful for the strip).
+
+New manual diagnostic, off by default: `RESOT_GATE_TINT` (retail, all renderers).
+Bit 0 paints the door leaves magenta, keeping alpha and depth; bit 1 also passes
+alpha test and depth; bit 2 omits the curtain draws. `[GATE-DRAW]` now also logs the
+target, fog state, per-vertex fog factor and curtain draws. Implemented and built,
+not run.
+
+Vulkan fault, nvoglv64.dll+0xED6415 reading 0x108:
+- Both crashes (312568 and 817888 queries) were at steady 60 fps. Background pipeline
+  counts stayed flat over the last logged intervals (214, 207), so compilation was
+  not visibly active. The query totals differ, so there is no fixed count limit.
+- The pipeline-cache init in `resot_pipeline_cache_vulkan.inc` has a real race: two
+  compilers can each create a cache, leaking one or using NULL briefly. It can only
+  occur at the first creation, so it does not explain a fault minutes later. Not changed.
+- Candidate tested and not reproduced: with pooling off a VkQueryPool is destroyed once
+  its fence signals, before SDL resets the command buffer naming it.
+  `native_gpu_smoke.exe vulkan --query-churn <pool_disabled> <total> [present]`:
+  pooling off 3000000 queries in 24 s (`logs/query-churn-off.txt`); with present,
+  pooling off and on, 3000000 each in 51.5 s (`logs/query-churn-present-pool*.txt`).
+  All exit 0, all reports complete. The cause is not established. The synthetic
+  frame lacks the game's textures, geometry and shaders.
+- Change without proof of cause: Vulkan query reuse is on again, as D3D12 already was,
+  removing about 2400 create/destroy pairs/s from the driver. The earlier A/B found no
+  reproducible gain or loss. Pooled retail sessions in the logs reached only 255918
+  reused queries, below the 312568 of the first crash, so they do not show pooling is
+  immune. To compare: `RESOT_PB_PAYLOAD_CONTROL=<file>` holding `2` turns it off.
+- The crash report now names the thread, and lists stack words pointing into loaded
+  modules (candidates, not a verified chain). Built; not yet seen on a real fault.
+
+Run: `recomp.ps1 -Target xbox-retail -BuildOnly` and `-Target xbox-demo -BuildOnly`
+exit 0; `build-android.ps1` exit 0; `check-hlsl.py` ok; `native_vulkan` CTest passed
+in 106.71 s; `test-native-surface-alias.py` passed. Not checked: any of
+this in the game on any renderer, Android on a device, D3D12 regression suite.
+
+## 2026-10-30 (later): Vulkan black flashes, retail shader hitches, Farah Room main gate
+
+User confirms the earlier demo/font/logo, Reception Hall and Tower fixes.
+New reports: Vulkan repeatedly alternates gameplay with a fully black screen
+for about half a second in certain places; the main gate of retail 9101
+Farah Room is invisible on every renderer; large FPS drops in some sections.
+The user requests manual testing only, with no scripted controller runs.
+
+Read the latest manual logs under `bin/logs/` and its history. The latest
+12:03 log is D3D11 in Farah Room, not Vulkan. The preceding Vulkan session
+is `20261030-120318-158-11880-xbox-retail-err.txt` (Reception Hall, Tower).
+Original logs and the performance analysis are retained under ignored
+`research/xbox-retail/perf-20261030/`.
+
+Implemented:
+- Retail native target alias lifetime: the Vulkan log repeatedly says
+  `render target 80104000 640x480 rewritten by the CPU`. The previous RAM
+  fingerprint policy released the whole GPU surface, including `front` and
+  `largest`; `ng_compose` then explicitly cleared the frame to black when
+  no front image remained. A GPU image drawn this frame now remains the
+  sampling producer. An older image whose RAM was reused loses only its
+  texture alias: it stays owned for queued draws/display until normal
+  surface reuse/eviction. All samples in a frame retain the stale result;
+  a new GPU draw restores the alias. Demo policy is unchanged (no evidence
+  from its XBE for this retail alias heuristic). Shared native D3D12/Vulkan
+  code, including Android; the user confirms the black flashes are resolved on Windows.
+- Retail D3D11 cold vertex shaders use the existing demo background compiler
+  and CPU vertex fallback while pending. The latest retail log has 23 cold
+  compilations, 28.05-153.93 ms each, 2181.80 ms total, on the executor;
+  KickOff waits reach 626.9 ms. `RESOT_ASYNC_VSH=0` retains synchronous mode.
+  This removes the in-thread compile path; no measured FPS improvement is
+  claimed without a new run. Sustained Vulkan cost is separate: example
+  133.8 FPS/229 draws/42365 vertices/2.82 ms executor versus 73.8 FPS/543
+  draws/80191 vertices/5.42 ms executor, with higher title cost as well.
+  Cold-reference wait counters did not increase across those slow intervals.
+- Farah Room investigation: the BF has separate collision-only main-door
+  leaves 6600D769/6600D76A, and renderable action-kit prototypes
+  3F001EF1/3F001EF2, mesh 3F001EC3/3F001EC4, placement 3F001EB8.
+  The assets are present; this does not prove the live draw is correct.
+  Added a bounded read-only `[GATE]` report only while this map is current,
+  sampling original LOA objects and actual world objects near the gate
+  immediately, +120 and +600 pad polls after the load. This distinguishes
+  missing/inactive kit instances from a renderer defect. No visibility flag
+  or guessed door geometry is forced. Gate fix remains unresolved.
+
+Checks: `python tools/test-native-surface-alias.py` passes the production
+alias/producer functions against synthetic guest RAM: current-frame writes,
+RAM reuse, repeated-stage samples, retained scanout ownership and restoration
+by a later GPU producer. No game data, window or input is used. This test
+checks ownership policy, not visual rendering on a GPU. `python
+tools/check-hlsl.py`: all ten entries pass. `tools/recomp.ps1 -BuildOnly`
+both targets and `tools/build-android.ps1` pass; logs
+`logs/flash-perf-{demo,retail,android}-build.txt`. No game was launched by
+the agent. User informed the rebuilt retail exe is ready for manual tests.
+
+Manual follow-up: the user ran D3D11 then Vulkan, confirmed the black
+flashes are resolved, and confirmed both front gate leaves are still invisible
+(the sides remain visible). Logs retained automatically under
+`bin/logs/history/20261030-121229-248-4680-xbox-retail-err.txt` (D3D11) and
+`20261030-121452-139-11444-xbox-retail-err.txt` (Vulkan). The gate report shows
+actual kit clones in the aggregate world, at the expected front-door positions;
+this rules out the initial hypothesis that no visual instances were created.
+The original LOA objects are prototypes, separate from these live clones.
+
+Pending: new FPS observations; Farah Room gate draw/culling correction;
+Android device verification.
+
+## 2026-10-30: shared HD font, original demo logo, Vulkan capture corruption, retail checkpoints
+
+User reports: D3D11 did not replace the font and retained the misplaced
+in-game demo logo; D3D12/Vulkan showed a white menu logo. The demo's closing
+movie was silent. Retail Special Load Map 1501 Reception Hall and 3101 Tower
+spawned the menu Prince (head only) in the void.
+
+Changes and evidence:
+- `resot_ui_textures.h` applies the existing per-target pixel-hash HD font
+  replacement to D3D11/D3D12/Vulkan and Android Vulkan. D3D11 allocates the
+  larger host sheet while preserving guest UV dimensions.
+- Demo: preserve the original logo's guest draw and yellow tint in menus;
+  remove the white host overlay. Hide only the exact logo pixel hash outside
+  menus; include menu/game state in the texture-cache hash for its dimensions.
+- Vulkan capture glitch: `ng_readback` reset vertex/index ring offsets without
+  changing the geometry-cache generation. Later uploads could overwrite or
+  cycle cached absolute ranges. Readback now preserves append offsets as
+  ordinary submission does. The user confirms the distortion/colors are fixed.
+- Retail BF WOLInfo and checkpoint GAOs: Reception Hall's base WOL only has
+  FRH 0F00425D, with no Prince setup call in the user's 31-load log. Its
+  Enemies WOL 2B014DDD includes TEC 0F00425C; use that pair. Tower WOL
+  41002456 includes the Bridge world; use TEC 2B006896 instead of FRH
+  41005E82. Tower's spawn is on the bridge approach. No generated C changed.
+- `Assets/xbox-demo/video/e3_end.int`: BIKi, 467 frames at 30000/1001 fps,
+  zero audio tracks (header +0x28). Demo XBE 0x00014043/0x0001405E queue
+  e3_end (name 0x00322FD8), exit state 3 at 0x0064D018. The long trailer
+  e3_trail.int has one track. No unrelated replacement audio was added.
+
+Checks:
+- `python tools/check-hlsl.py`: all ten embedded shader entries pass.
+- `tools/recomp.ps1 -Target xbox-demo -BuildOnly`, same for xbox-retail,
+  and `tools/build-android.ps1`: final builds pass, logs
+  `logs/ui-build-{demo,retail,android}.txt`. MSBuild/Gradle initialization
+  failed inside the sandbox; unrestricted retries passed.
+- Demo, each renderer: `tools/run.ps1 -Target xbox-demo -Windowed -Seconds 32
+  -SnapshotEvery 4 -Set @{RESOT_RENDERER='<d3d11|d3d12|vulkan>';
+  RECOMP_PAD_SCRIPT='2000:a:200,6000:a:200,12000:a:200,18000:start:300'}`.
+  Runtime recognises the demo HD font hash 3372CC85; original yellow logo
+  visible. User confirms demo appearance. Final Vulkan rerun adds
+  `RESOT_FB_BURST='900,180'`, unique dump prefix
+  `logs/ui-20261030/vulkan-fixed`: 180 consecutive captures, no corruption
+  seen in the sampled contact sheet; user confirms the fix.
+- Retail Reception Hall: 60 s D3D11 run, startup A inputs as above,
+  `RESOT_TEST_MAP='2B014DDD,1500,0F00425C'`; map loads, Prince setup
+  costume 1/mask 6 and new sector. User also selected the UI entry and
+  confirms Reception Hall is correct. Capture shows the Farah cinematic.
+  Retail HD font hash BF3884F3 recognised. Evidence under
+  `logs/ui-20261030/retail-1501*` and `logs/ui-retail-1501-run.txt`.
+
+- Tower Vulkan: first run used `RESOT_TEST_MAP='41002456,1500,2B006896'`
+  in addition to the user's UI choice, causing a second load. Repeated as
+  a single manual UI selection with no RESOT_TEST_MAP, 90 s. Body and initial
+  position are restored, but the user reports a fall on the first entry;
+  Retry spawns correctly and the level continues. Evidence under
+  `logs/ui-20261030/retail-3101*`. Do not call initial Tower entry fixed yet.
+- At the user's request, added a one-time +0.005 world-unit vertical offset
+  to the first Special Load Map spawn for Tower, at load completion. The
+  retail actor's world matrix is [GAO+0x0C], translation xyz at +0x30:
+  0x000309B5..0x000309E3 reads it for sector distances and
+  0x0003D7A9..0x0003D7CE updates it for displacement. Only z (+0x38) is
+  changed, with finite/bounded coordinate checks; no continuous lifting or
+  change to normal Retry. Diagnostic: `[MAP] Tower first spawn: z ...`.
+  Final Windows builds and Android APK pass with this change. The user
+  requested no further scripted-pad tests and will verify the new spawn.
+
+Pending: user verification of Tower's 0.005-unit spawn lift; longer gameplay
+and transitions on each renderer; Android device verification (the APK build
+is not a play test).
+
+## 2026-10-29 (later): v0.4.1
+
+Version 0.4.1 (versionCode 11): `resot_version.h`, `build.gradle`, READMEs,
+release notes `docs/releases/v0.4.1.md`. Android launcher: a bubble beside
+the version plate, "The game crashed? Tap here for logs!", shows from 1.5 s
+for 8 s with 0.6 s fades and opens the log sharing as the plate does
+(`LauncherView.drawLogsTip`); not on Windows, whose plate is no button.
+Checks: `recomp.ps1 -BuildOnly` both targets and `build-android.ps1` pass
+(logs/v041-*-build.txt): sot-xbox-retail.exe 50,470,912 bytes (file version
+0.4.1), sot-xbox-demo.exe 42,059,264, reSOT-android.apk 29,735,965. Not
+checked: the bubble on a phone screen.
+
+## 2026-10-29: retail flicker, black scenes, GPU-thread faults, Special Load Map
+
+User reports: in some retail maps (the dagger area among them) objects,
+shadows and textures flicker, then the scene goes black or plays without
+textures until the app restarts, or the game faults; some Special Load Map
+loads fault on Windows. Read: Android archives `resot-logs-20261028-234320`
+(OnePlus SM8650) and `New Folder` (Xiaomi SM8635), Windows `bin/logs`.
+
+Seen in the logs:
+- Both Android faults are on the executor thread (`resot-1002`). Symbolised
+  against the local build (same layout, offset +0x40BD0 for every frame):
+  SIGBUS BUS_ADRALN in `hw_visibility_complete` (InterlockedExchange on
+  report address 0x806DC793, from GET_REPORT) and SIGSEGV SEGV_ACCERR in
+  `hw_tex_hash` from `ng_texture` (an address outside guest RAM).
+- Every retail log, Windows and Android, has `[PB] walk left physical
+  memory ... after word 3F800000` (and other float words) in the ring and in
+  CALLs: vertex data decoded as commands, the signature the demo had with 4
+  or 16 submissions of asynchronous KickOff (2026-10-26, drew almost black).
+- Android: the executor is busy 9.5-9.9 s of every 10 s.
+- Windows: after Special Load Map 2601 Bridge and then 3101 Tower the
+  Prince's sector stayed 7489C160; loading 5102 next faulted in
+  sub_000DEB70+0x77 with ebx = 7489C160.
+
+Changes (RE-SoT, retail unless stated):
+- `xbox_memory_layout.c`: `RESOT_KICK_AHEAD` default 1 for retail (was 16).
+- `nv2a_pb_exec.c`: GET_REPORT to an unaligned address or one outside RAM
+  is dropped and logged (`[GPU] GET_REPORT ... is not a report slot`).
+- `nv2a_hw_d3d11.inc` / `nv2a_hw_native.inc` (both targets): a texture whose
+  palette is outside guest RAM is not sampled (`hw_palette_ok`).
+- `nv2a_hw_native.inc`: a render target sampled as a texture is retired when
+  the guest RAM it covers changed since the GPU last drew it (fingerprint as
+  `hw_tex_hash`, once a frame); before, any texture at an old target's
+  address showed the old host image for as long as the target stayed among
+  the 32. Logged: `[HW native] render target ... rewritten by the CPU`.
+- `resot_cheats.h`: 120 polls after a Special Load Map, a Prince's sector
+  equal to the one before the load is replaced by the checkpoint GAO's
+  [GAO +0x24] (through the LOA table) when that is a readable sector; logged
+  `[MAP] Prince's sector ... was the one before the load`. Whether +0x24 of
+  a checkpoint GAO is its sector was not checked in the XBE.
+
+Checks: `recomp.ps1 -BuildOnly` both targets and `build-android.ps1` pass
+(logs/fix041-*-build.txt): sot-xbox-retail.exe 50,469,376 bytes,
+sot-xbox-demo.exe 42,057,216, reSOT-android.apk 29,734,177. Not run: any of
+it in game, on either host; the frame rate with one submission ahead; the
+demo (only the palette bound reaches it).
+
+Follow-up, same day (user run, Windows D3D12, bin/logs 08:43-08:53): every
+Special Load Map loaded without a fault (31 loads). `[PB] walk left` no
+longer appears; no `render target ... rewritten` or `GET_REPORT` line. Three
+loads left the Prince on the sector the checkpoint GAO also names (the
+repair logged none). Back to the menu from 8101 Bridge Support the loading
+screen stayed: the loader thread ended, then 0 KickOffs for over a minute
+while kernel calls went on; the log does not say what the title waited for.
+Added (Windows host, `main.c`): one call-chain dump of every thread after
+20 s without a KickOff (`xbox_Nv2aKickTotal`, `RESOT_STALL_DUMP=0` off).
+Still reported, causes not found: pink/green surfaces for about a second on
+entering a level, objects flickering between black and visible during the
+opening camera, some vertices (the Prince's too) out of place for half a
+second (since the start of the project). Checked and consistent across the
+CPU interpreter, reference HLSL and translated GLSL: ARL (floor(x+0.001)),
+relative constant reads (out of range read c[0]); no x87/SSE instruction is
+left untranslated in the retail gen. The halo visibility code (0x000CE2C0)
+keeps its last ratio while a result is pending. Builds pass
+(logs/stall-*-build.txt); not run.
+
+Loading-screen hang found (same log): every retail loading screen runs a new
+thread at 0x000CA320 (75 threads, 63 of them that one). The menu's
+0x000CA420 stops it and polls GetExitCodeThread (0x00331D1E) every 20 ms
+until it is not STILL_ACTIVE; that reads the ETHREAD the bridge's
+ObReferenceObjectByHandle builds from a 64-slot table that never gave a
+slot back. At the 63rd loading thread the table was full, the object null,
+and the poll read STILL_ACTIVE for ever: the thread had ended
+(PsTerminateSystemThread logged) but `video overlay off`, which follows in
+the 30 earlier returns, never came. Retail fix (`kernel_bridge.c`, RE-SoT):
+a full table reuses a slot whose handle the title closed, else one in turn.
+The demo keeps the 64-slot table (not checked against its XBE). Builds pass
+(logs/threadobj-*-build.txt): sot-xbox-retail.exe 50,470,912 bytes,
+sot-xbox-demo.exe 42,059,264, reSOT-android.apk 29,734,997. Not run.
+
+## 2026-10-28 (night, 2): HD menu font from the Atlantis face, logo opaque
+
+User requests: the menu logo back to full opacity; menu text of higher
+quality than the 4x enlargement, from the user's HD drawings
+(Assets/fonts/<target>/font_<demo|retail>_hd.png), fixed where their
+letters, accents and dots differ from the sheet; the letters are the
+Atlantis MF face (`port/windows/res/AtlantisMF.ttf`).
+
+- Logo: `RESOT_E3_LOGO_ALPHA` defaults to 1 (full opacity).
+- `tools/hd-font.py <target> --preview` (rewritten): the sheet is cut into
+  glyphs (cores at coverage 0.7, faint pixels to the nearest core, cores
+  sharing columns in one line joined; a glyph wider than 1.15 capitals that
+  nothing matches is cut at its column of least ink). Each glyph is compared
+  with the face's letters at the sheet's size, the best eight fitted by least
+  squares (offset, scale 0.8..1.25 per axis, area-sampled); accepted when the
+  error (wrong coverage / own) is under 0.36 and the wrong coverage in any
+  3x3 sheet pixels under 4. Else the user's drawing is fitted there the same
+  way; else the runtime enlarges the sheet in that rectangle.
+  Demo: 192 glyphs, 156 from the face, 34 from the drawing, 2 enlarged (`%`
+  and `@`). Retail: 205 glyphs, 169 face, 34 drawing, 2 enlarged (two marks
+  near x 201..228, y 54..71 of the sheet). Output port/game/resot_hd_font_
+  <target>.h, 2048x512 coverage, 8 bits. In the drawings the accents of
+  É Ê Ë and others were graves; the face gives the sheet's own.
+  Looked at: logs/hd-font-<target>.png, the result over the sheet.
+- Runtime (`resot_hd_font.h`): the sheet is still found by its hash; the
+  fitted coverage replaces it, the two rectangles keep the enlargement. The
+  coverage is laid upright or upside down by comparing it with the sheet;
+  `[HDFONT] fitted font, ...` logs which. `RESOT_HD_FONT=sheet` keeps only
+  the enlargement, `RESOT_HD_FONT=0` the original sheet.
+
+Checks: `recomp.ps1 -BuildOnly` for both targets and `build-android.ps1`
+pass (logs/hdfont2-*-build.txt): sot-xbox-demo.exe 42,057,216 bytes,
+sot-xbox-retail.exe 50,466,816, reSOT-android.apk 29,729,297. Not checked:
+the game at run time (the orientation line, the text on screen), on either
+host.
+
+## 2026-10-28 (late, 2): demo menu logo semi-transparent, and on Android
+
+User report: the E3 logo over the demo's menu was opaque (the game drew it
+semi-transparent in its corner), and on Android it showed only with the 1440
+resolution setting; on Windows it was always there.
+
+- Android: `ng_compose` copies the frame as it is and returns when it is no
+  larger than the display (`[POWER] exact frame snapshot`); the logo was drawn
+  only on the other path, so only a frame larger than the screen (1440 on the
+  user's phone) showed it. The logo is now drawn on that snapshot too
+  (`ng_e3_logo`, nv2a_hw_native.inc).
+- Transparency: the logo is drawn with the sheet's own alpha times
+  `RESOT_E3_LOGO_ALPHA` (default 0.5). The value the game used in its own
+  draw was not read; 0.5 is a choice. `[LOGO] E3 logo drawn over the menu:
+  sheet alpha A..B, x K` logs the sheet's alpha range once.
+
+Checks: `recomp.ps1 -BuildOnly` for both targets and `build-android.ps1`
+pass (logs/logo-alpha-*-build.txt). Not checked: the logo on screen on
+Windows or Android, and the logged alpha range.
 
 ## 2026-10-28 (late): demo menu title and E3 logo, final 0.4.0 builds
 

@@ -10,6 +10,8 @@
  */
 
 #include "kernel.h"
+#include "resot_runtime.h"   /* RE-SoT: RESOT_RUNTIME_DEMO for the language */
+#include "../../../../windows/src/options.h"
 #include <string.h>
 
 /* ============================================================================
@@ -120,7 +122,7 @@ NTSTATUS __stdcall xbox_XeUnloadSection(PXBE_SECTION_HEADER Section)
  * SMBus. For recompilation, we return sensible defaults:
  *   - Region: North America
  *   - Video: NTSC, widescreen+HDTV enabled
- *   - Language: English
+ *   - Language: RE-SoT Options (English 1, German 3, French 4, Spanish 5, Italian 6)
  *   - Audio: Stereo, Dolby Digital
  *   - DVD Region: Region 1 (North America)
  * ============================================================================ */
@@ -136,9 +138,15 @@ NTSTATUS __stdcall xbox_ExQueryNonVolatileSetting(
 
     switch (ValueIndex) {
     case XC_LANGUAGE:
-        /* English = 1 */
+        /* RE-SoT: Honor the saved five-language Options choice; invalid IDs fall
+         * back to English in the options layer. */
         if (ValueLength >= sizeof(ULONG)) {
+#if RESOT_RUNTIME_DEMO
+            /* RE-SoT: the demo's languages were never checked: English. */
             *(PULONG)Value = 1;
+#else
+            *(PULONG)Value = (ULONG)resot_game_language();
+#endif
             if (Type) *Type = 4; /* REG_DWORD */
             if (ResultLength) *ResultLength = sizeof(ULONG);
         }

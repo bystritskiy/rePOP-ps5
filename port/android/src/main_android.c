@@ -10,9 +10,9 @@
  *   --data <dir>   the app's external files folder (Android/data/
  *                  com.fulger.resot/files): logs, saves, options
  *
- * Unlike Windows, default.xbe is not embedded: it is read from the game
- * folder and must have this target's SHA-256 (target.h) before any of it is
- * mapped. The SDL thread keeps the window and its events; the lifted entry
+ * The disc default.xbe is checked before mapping. Retail also accepts the
+ * known EU disc and uses its embedded checked NTSC image, as on Windows.
+ * The SDL thread keeps the window and its events; the lifted entry
  * point runs on a thread of its own with a large stack.
  */
 
@@ -40,6 +40,10 @@
 #include "target.h"
 #include "host_files.h"
 #include "sha256.h"
+#if RESOT_RUNTIME_RETAIL
+#include "retail_image.h"
+extern const unsigned char resot_retail_xbe_start[], resot_retail_xbe_end[];
+#endif
 #include "../../windows/src/options.h"
 
 extern RECOMP_TLS uint32_t g_eax, g_ecx, g_edx, g_esp;
@@ -108,6 +112,10 @@ static void set_foreground(int active)
     s_foreground = active;
     pthread_cond_broadcast(&s_foreground_changed);
     pthread_mutex_unlock(&s_foreground_lock);
+    {
+        extern void resot_android_gpu_turbo(int);
+        resot_android_gpu_turbo(active); /* RE-SoT: never held for a hidden game. */
+    }
     fprintf(stderr,"[POWER] renderer %s\n",active?"resumed":"suspended in background");
 }
 
@@ -342,12 +350,30 @@ static int load_xbe(void **out_data, size_t *out_size, char *why, size_t why_siz
     resot_sha256_init(&sha);
     resot_sha256_update(&sha, data, (size_t)size);
     resot_sha256_hex(&sha, hex);
+#if RESOT_RUNTIME_RETAIL
+    {
+        size_t selected_size = (size_t)size;
+        int selected = resot_retail_select_image(&data, &selected_size,
+            resot_retail_xbe_start,
+            (size_t)((uintptr_t)resot_retail_xbe_end - (uintptr_t)resot_retail_xbe_start));
+        if (!selected) {
+            free(data);
+            snprintf(why, why_size, "Unsupported retail disc or invalid built-in runtime image.\n"
+                     "Disc SHA-256 %s.", hex);
+            return 0;
+        }
+        fprintf(stderr, "[BOOT] retail disc=%s image=%s source=%s\n", hex,
+            RESOT_XBE_SHA256, selected == 2 ? "built-in (EU disc data)" : "disc (NTSC)");
+        size = (long)selected_size;
+    }
+#else
     if (strcmp(hex, RESOT_XBE_SHA256) != 0) {
         free(data);
         snprintf(why, why_size, "This default.xbe is not the %s build reSOT supports.\n"
                  "SHA-256 %s, expected %s.", RESOT_TARGET_ID, hex, RESOT_XBE_SHA256);
         return 0;
     }
+#endif
     *out_data = data;
     *out_size = (size_t)size;
     return 1;
@@ -376,6 +402,10 @@ static void *game_main(void *unused)
     (void)unused;
     if (setpriority(PRIO_PROCESS, 0, 0) != 0)
         fprintf(stderr, "[THREAD] game normal priority failed: %s\n", strerror(errno));
+    {
+        extern void resot_android_thread_cores(int);
+        resot_android_thread_cores(1); /* RE-SoT: inherited by what this thread starts. */
+    }
 
     if ((missing = missing_game_file()) != NULL) {
         snprintf(why, sizeof why, "The folder %s does not contain the %s game files.\n\nMissing: %s",

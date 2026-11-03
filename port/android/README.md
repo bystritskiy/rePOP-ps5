@@ -1,19 +1,60 @@
 # reSOT for Android
 
+Version **0.5.0** (versionCode **15**) accepts the USA and known PAL EU
+retail ISO in the same installer. For an EU disc the launcher enables Start
+Game, and the host checks its default.xbe identity before selecting the
+checked NTSC runtime image embedded in the local retail library. The EU XBE
+is not mapped at NTSC addresses. No manual file replacement is needed;
+keep the EU default.xbe and all EU assets as extracted. NTSC retains its disc
+image; the demo's existing executable hash check is unchanged. Unknown XBE
+revisions remain rejected on Android.
+
+Both hosts offer English, French, Spanish, Deutsch and Italiano in reSOT
+Options > Language, regardless of disc edition. Choices persist under
+[Game] Language and apply at the next start. German and Italian use EU assets;
+when their sound banks are absent (USA disc), English is used for that run
+while the selected preference and all five choices remain available.
+EU movies are resolved under VIDEO/30fps, then VIDEO/25fps, when a flat movie
+path is absent. Build and host-side loader checks do not certify device
+playability; see VALIDATION.md for the exact tests and remaining limits.
+
+The Windows BF-derived light-halo pointer is specific to the Windows mouse
+host. Android retains its touch controls and has no Windows CUR resource or
+cursor extraction build dependency. The shared framebuffer's cursor setter
+is guarded by `_WIN32`; the Android APK was rebuilt after this change.
+
+The launcher UI follows the system language when it is English, French or
+Spanish; other system languages fall back to English. The game language choices use Xbox IDs: English `1`, German `3`, French `4`,
+Spanish `5` and Italian `6`. It saves the selection in
+`resot-options.ini` under `[Game] Language` and applies it on the next game
+start. The game language is English unless chosen otherwise, on both hosts.
+The retail's reSOT Options has the same choice (Language); the demo always runs
+in English. This requests the game's own text; it does not translate the game
+or create missing game assets.
+
 After 0.3.4: the Vulkan shaders no longer declare the SPIR-V extensions
 `SPV_GOOGLE_hlsl_functionality1` / `SPV_GOOGLE_user_type`, which older Mali
 drivers reject at the first pipeline (closing the game after Start Game,
 GitHub #8, #9). Not yet confirmed on a Mali device. The Windows Vulkan
 renderer uses the same shaders, so `port/windows` needs no separate change.
 
-Version 0.4.0 adds Special Load Map and Cheats (in reSOT Options, as on
+Version 0.4.4 brings the same renderer changes as Windows (direct renderer by default,
+retail pushbuffers as direct draws, game and renderer in parallel, halo fix) and drops the
+launcher's language button; built, not run on a device. Version 0.4.3 batches visibility reports, as on Windows; the Windows shader and F8 changes do not apply here.
+Known issue, to fix: in the retail Magic Fountain teleport the fade to black does not
+appear and the camera stays at the entrance on the bridge until the view is changed.
+Version 0.4.2 brings the HD menu logos, the retail name keyboard fix for touch
+and the sand tank HUD fix (as on Windows). Version 0.4.1 carries the retail rendering, crash and loading-hang fixes
+(as on Windows) and a tip beside the launcher's version plate: "The game
+crashed? Tap here for logs!" appears after 1.5 s, stays 8 s and fades; it
+opens the same log sharing as the plate. Version 0.4.0 adds Special Load Map and Cheats (in reSOT Options, as on
 Windows) and the same HD menu font. Version 0.3.4 stops a rejected graphics pipeline from closing the game (Mali
 reports), releases a stuck D3D wait and brings the definitive logo and the
 animated Prince of Persia title to the launcher. Version 0.3.3 ran the game and the GPU executor in parallel on retail, fixes
 a retail mid-game freeze, reduces audio crackle and brings the new animated
 logo. Version 0.3.2 added Reduced/Standard/Full graphics presets and a background
 stable-release check with optional Update / Close buttons styled like the
-launcher. The displayed version is 0.4.0. Offline/rate-limit errors are ignored.
+launcher. The displayed version is 0.5.0. Offline/rate-limit errors are ignored.
 No game files, logs or settings are uploaded; GitHub receives the normal HTTPS
 request and reSOT version in its User-Agent. Update opens the official release
 page, without downloading/installing an executable automatically.
@@ -151,9 +192,10 @@ An extracted disc can also be copied there from a computer; any folder in
 `files/` with game files is found. File and folder names are matched without
 regard to case (the retail disc has `VIDEO/` and `SOUND/`, the game asks in
 other spellings), as on Windows, also on devices whose storage is
-case-sensitive. Unlike Windows, **`default.xbe` must be in
-the game folder**: the Android libraries do not embed it, read it from there
-and refuse it unless its SHA-256 is the one in `source/<target>/target.h`.
+case-sensitive. **The disc's `default.xbe` must remain in the game folder**
+for identity verification. The demo and NTSC retail read their checked image
+from it. Known EU retail uses the embedded checked NTSC runtime image instead;
+its original EU file stays untouched. Other executable hashes are rejected.
 
 ## Launcher
 
@@ -282,6 +324,9 @@ while the panel is open or the touch pad is hidden; tapping the same spot
 still opens/closes the panel. The icon returns when the pad is visible and
 the panel is closed. Windows uses F5 and
 has no corresponding touch button.
+The F8 debug views (`port/windows/README.md`) are not reachable here: Android has
+no F8 key and no such touch control, as they are a developer tool.
+
 **Game behavior** (the Windows F7 panel's Tutorials, Dagger of time and
 Cheats) has no Android panel yet: this host keeps `[Game] Tutorials` in the
 INI and applies it (retail), and leaves the dagger as the game has it. Cheats and Special Load Map are in reSOT Options, in the
@@ -398,7 +443,7 @@ release key before handing it to anyone.
 
 | Windows (`port/windows/src`) | Android (`port/android/src`) |
 | --- | --- |
-| `main.c`: WinMain, embedded XBE, vectored exception handler | `main_android.c`: SDL_main, XBE read from the game folder and hashed, SIGSEGV handler; the game on a 64 MB-stack thread |
+| `main.c`: WinMain, embedded XBE, vectored exception handler | `main_android.c`: SDL_main, disc XBE hashed; EU uses the embedded NTSC image; SIGSEGV handler; the game on a 64 MB-stack thread |
 | x86-64 MMIO decoder (`mmio_decode.h`) | the AArch64 decoder in the same header: LDR/STR forms, LDP/STP, LDAR/STLR |
 | D3D11 by default, D3D12/Vulkan optional | Vulkan only, the same native encoder |
 | `xinput_device.c` (XInput, keyboard) | `input_android.c` (SDL3 gamepads, keyboard, touch) |
@@ -615,6 +660,21 @@ also recovers stale queues after a backlog/stall and uses a smaller prime.
 The retail APU scheduler now tolerates short Android scheduling delays without
 immediately discarding elapsed audio time. Cutscene sync and thermal benefit
 await user testing; the APK was installed without launching it.
+
+Game threads now stay off the little cores: those of at least half the largest
+`cpu_capacity`, read at start and logged as `[THREAD] CPU capacities`. Pipeline
+compilers may use any core. `RESOT_BIG_CORES=0` turns this off. Windows has no such
+setting: its Direct3D and Vulkan renderers were checked only on CPUs with one core
+type, and Pinyon Shift measured no gain from thread placement on one.
+
+**GPU turbo.** `GpuTurbo=1` under `[Graphics]` in `resot-options.ini` holds an Adreno
+at its top clocks while the game is shown, through libadrenotools. Default off, no
+launcher row yet, no Windows counterpart: it is a KGSL property of Adreno, and it
+trades heat for steadier frames, so thermal caps can arrive sooner. The state outlives
+the process: after a crash it stays on until the next start of the game or a reboot.
+The `[POWER] GPU turbo` lines show when it changes. Not tested on a device.
+
+**Direct renderer path.** Both native libraries are built with the direct path of [docs/DIRECT-RENDERER.md](../../docs/DIRECT-RENDERER.md) (demo and retail). Since 2026-11-02 it is on by default, as on Windows, and retail KickOff runs 32 submissions ahead with it, at most two frames ahead of the renderer. The app has no switch to turn it off (Windows: `RESOT_DIRECT_DRAW=0`). Not run on a device yet.
 
 ### APK publisher integrity (v0.3.2, versionCode 7)
 

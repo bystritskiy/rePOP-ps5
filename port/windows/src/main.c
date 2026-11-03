@@ -20,6 +20,7 @@
 #include <string.h>
 #include <math.h>
 #include "options.h"
+#include "cursor.h"
 #include "launcher.h"
 #include "console_logs.h"
 
@@ -163,19 +164,18 @@ int resot_movie_skip_down(void)
  * stack is read. */
 #include <tlhelp32.h>
 
-static DWORD WINAPI resot_thread_dump_main(LPVOID param)
+static void resot_thread_dump_once(void)
 {
-    DWORD secs = (DWORD)(uintptr_t)param, self = GetCurrentThreadId();
+    DWORD self = GetCurrentThreadId();
     DWORD pid = GetCurrentProcessId();
 
-    for (;;) {
+    {
         HANDLE snap;
         THREADENTRY32 te;
 
-        Sleep(secs * 1000);
         snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
         if (snap == INVALID_HANDLE_VALUE)
-            continue;
+            return;
         fprintf(stderr, "[THREADS] call chains, innermost first\n");
         te.dwSize = sizeof te;
         if (Thread32First(snap, &te)) do {
@@ -235,6 +235,39 @@ static DWORD WINAPI resot_thread_dump_main(LPVOID param)
     }
 }
 
+static DWORD WINAPI resot_thread_dump_main(LPVOID param)
+{
+    DWORD secs = (DWORD)(uintptr_t)param;
+    for (;;) {
+        Sleep(secs * 1000);
+        resot_thread_dump_once();
+    }
+}
+
+/* reSOT: one dump when the title has stopped kicking the GPU for 20 s
+ * (user run 2026-10-29: after about 30 Special Load Maps, back to the menu
+ * from 8101 Bridge Support, the loading screen stayed with 0 KickOffs and
+ * the log could not say what the title waited for). Re-armed once it
+ * kicks again; RESOT_STALL_DUMP=0 turns it off. */
+extern long xbox_Nv2aKickTotal(void);
+static DWORD WINAPI resot_stall_watch_main(LPVOID unused)
+{
+    long last = -1;
+    int still = 0, dumped = 0;
+    (void)unused;
+    for (;;) {
+        long now;
+        Sleep(5000);
+        now = xbox_Nv2aKickTotal();
+        if (now != last) { last = now; still = 0; dumped = 0; continue; }
+        if (now > 0 && !dumped && ++still >= 4) {
+            fprintf(stderr, "[THREADS] no KickOff for 20 s (total %ld): call chains follow\n", now);
+            resot_thread_dump_once();
+            dumped = 1;
+        }
+    }
+}
+
 /* RESOT_PROFILE_MS=<n>: a sampling profiler. Every ten seconds the two
  * threads that used the most CPU in the previous ten are chosen (the game's
  * own thread and the one executing the pushbuffer, in practice) and sampled
@@ -243,7 +276,43 @@ static DWORD WINAPI resot_thread_dump_main(LPVOID param)
  * as a share of that thread's samples. Lifted routines appear as
  * sub_XXXXXXXX. */
 #define RESOT_PROF_SLOTS 2048
-typedef struct { DWORD64 addr; char name[64]; unsigned hits; } ResotProfSlot;
+#define RESOT_PROF_MODULES 64
+typedef struct { DWORD64 addr; char name[160]; unsigned hits; } ResotProfSlot;
+
+/* The routine holding addr, by name; its start goes to *key. 0 if dbghelp has none. */
+static int resot_prof_symbol(DWORD64 addr, char *out, size_t size, DWORD64 *key)
+{
+    char buf[sizeof(SYMBOL_INFO) + 256];
+    SYMBOL_INFO *sym = (SYMBOL_INFO *)buf;
+    DWORD64 disp = 0;
+    memset(buf, 0, sizeof buf);
+    sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+    sym->MaxNameLen = 255;
+    if (!SymFromAddr(GetCurrentProcess(), addr, &disp, sym))
+        return 0;
+    *key = sym->Address;
+    if (out && size) {
+        strncpy(out, sym->Name, size - 1);
+        out[size - 1] = 0;
+    }
+    return 1;
+}
+
+static void resot_prof_count(ResotProfSlot *table, DWORD64 key, const char *name)
+{
+    unsigned hsh = (unsigned)((key >> 4) ^ (key >> 20)) % RESOT_PROF_SLOTS, i;
+    for (i = 0; i < RESOT_PROF_SLOTS; i++, hsh = (hsh + 1) % RESOT_PROF_SLOTS) {
+        ResotProfSlot *e = &table[hsh];
+        if (!e->addr) {
+            e->addr = key;
+            strncpy(e->name, name, sizeof e->name - 1);
+        }
+        if (e->addr == key) {
+            e->hits++;
+            return;
+        }
+    }
+}
 typedef struct { DWORD tid; HANDLE h; ULONGLONG cpu, used; } ResotProfThread;
 
 static ULONGLONG resot_thread_cpu(HANDLE h)
@@ -257,7 +326,7 @@ static ULONGLONG resot_thread_cpu(HANDLE h)
 
 static DWORD WINAPI resot_profile_main(LPVOID param)
 {
-    static ResotProfSlot slot[2][RESOT_PROF_SLOTS];
+    static ResotProfSlot slot[2][RESOT_PROF_SLOTS], module[2][RESOT_PROF_SLOTS];
     static ResotProfThread th[128];
     DWORD ms = (DWORD)(uintptr_t)param, self = GetCurrentThreadId();
     DWORD pid = GetCurrentProcessId(), last = GetTickCount();
@@ -275,7 +344,7 @@ static DWORD WINAPI resot_profile_main(LPVOID param)
         for (t = 0; t < 2; t++) {
             CONTEXT ctx;
             STACKFRAME64 frame;
-            DWORD64 pc = 0;
+            DWORD64 pc = 0, inner;
             HANDLE h;
             int depth;
 
@@ -286,44 +355,72 @@ static DWORD WINAPI resot_profile_main(LPVOID param)
                 continue;
             memset(&ctx, 0, sizeof ctx);
             ctx.ContextFlags = CONTEXT_FULL;
+            inner = 0;
             if (GetThreadContext(h, &ctx)) {
-                memset(&frame, 0, sizeof frame);
-                frame.AddrPC.Offset = ctx.Rip;    frame.AddrPC.Mode = AddrModeFlat;
-                frame.AddrFrame.Offset = ctx.Rbp; frame.AddrFrame.Mode = AddrModeFlat;
-                frame.AddrStack.Offset = ctx.Rsp; frame.AddrStack.Mode = AddrModeFlat;
-                for (depth = 0; depth < 24 && !pc; depth++) {
-                    if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, GetCurrentProcess(), h,
-                                     &frame, &ctx, NULL, SymFunctionTableAccess64,
-                                     SymGetModuleBase64, NULL)
-                        || !frame.AddrPC.Offset)
-                        break;
-                    if (frame.AddrPC.Offset >= lo && frame.AddrPC.Offset < hi)
-                        pc = frame.AddrPC.Offset;
+                /* RE-SoT: unwound with the loader's own tables, which know every
+                 * module loaded since start (driver, d3d12core). StackWalk64 with
+                 * dbghelp's list, built at start, fell back to frame pointers in
+                 * those and blamed unrelated routines of the executable
+                 * (xbox_translate_path, vsscanf_l: 2026-11-02 executor profiles). */
+                inner = ctx.Rip;
+                __try {
+                    for (depth = 0; depth < 48 && ctx.Rip; depth++) {
+                        DWORD64 image = 0, est = 0;
+                        PVOID hdata = NULL;
+                        PRUNTIME_FUNCTION fn;
+                        if (ctx.Rip >= lo && ctx.Rip < hi) {
+                            pc = ctx.Rip;
+                            break;
+                        }
+                        fn = RtlLookupFunctionEntry(ctx.Rip, &image, NULL);
+                        if (fn) {
+                            RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, ctx.Rip, fn, &ctx, &hdata, &est, NULL);
+                        } else {                 /* a leaf: return address on top */
+                            ctx.Rip = *(const DWORD64 *)(uintptr_t)ctx.Rsp;
+                            ctx.Rsp += 8;
+                        }
+                    }
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    pc = 0;
                 }
             }
             ResumeThread(h);
             total[t]++;
-            if (pc) {
-                char buf[sizeof(SYMBOL_INFO) + 256];
-                SYMBOL_INFO *sym = (SYMBOL_INFO *)buf;
-                DWORD64 disp = 0;
-                memset(buf, 0, sizeof buf);
-                sym->SizeOfStruct = sizeof(SYMBOL_INFO);
-                sym->MaxNameLen = 255;
-                if (SymFromAddr(GetCurrentProcess(), pc, &disp, sym)) {
-                    unsigned hsh = (unsigned)(sym->Address >> 4) % RESOT_PROF_SLOTS;
-                    for (i = 0; i < RESOT_PROF_SLOTS; i++, hsh = (hsh + 1) % RESOT_PROF_SLOTS) {
-                        ResotProfSlot *e = &slot[t][hsh];
-                        if (!e->addr) {
-                            e->addr = sym->Address;
-                            strncpy(e->name, sym->Name, sizeof e->name - 1);
-                        }
-                        if (e->addr == sym->Address) {
-                            e->hits++;
-                            break;
-                        }
+            (void)frame;
+            if (inner) {
+                char name[160], mod[48] = "?", caller[64] = "?";
+                DWORD64 key, inner_key = inner;
+                HMODULE hm = NULL;
+                int in_exe = inner >= lo && inner < hi;
+                if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                                       | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                       (LPCSTR)(uintptr_t)inner, &hm) && hm) {
+                    char path[MAX_PATH];
+                    const char *base;
+                    if (GetModuleFileNameA(hm, path, sizeof path)) {
+                        base = strrchr(path, '\\');
+                        strncpy(mod, base ? base + 1 : path, sizeof mod - 1);
+                        mod[sizeof mod - 1] = 0;
                     }
+                    inner_key = (DWORD64)(uintptr_t)hm;
                 }
+                resot_prof_symbol(inner, NULL, 0, &inner_key);
+                if (pc && !in_exe)
+                    resot_prof_symbol(pc, caller, sizeof caller, &key);
+                else
+                    key = 0;
+                if (in_exe) {
+                    resot_prof_symbol(inner, name, sizeof name, &inner_key);
+                } else {
+                    char sym[64];
+                    if (resot_prof_symbol(inner, sym, sizeof sym, &inner_key))
+                        snprintf(name, sizeof name, "%s!%s < %s", mod, sym, caller);
+                    else
+                        snprintf(name, sizeof name, "%s < %s", mod, caller);
+                }
+                key = inner_key * 31u + key;
+                resot_prof_count(slot[t], key, name);
+                resot_prof_count(module[t], (DWORD64)(uintptr_t)hm + 1, mod);
             }
         }
         if (GetTickCount() - last < 10000)
@@ -350,9 +447,27 @@ static DWORD WINAPI resot_profile_main(LPVOID param)
                 slot[t][best].hits = 0;
             }
             fprintf(stderr, "\n");
+            /* RE-SoT: where the thread was, by module: the executable, SDL, the
+             * D3D runtime and driver, or the system (waits). */
+            fprintf(stderr, "[PROFILE] thread %lu by module:", (unsigned long)th[target[t]].tid);
+            for (n = 0; n < 12; n++) {
+                unsigned best = RESOT_PROF_SLOTS;
+                for (i = 0; i < RESOT_PROF_SLOTS; i++)
+                    if (module[t][i].hits
+                        && (best == RESOT_PROF_SLOTS || module[t][i].hits > module[t][best].hits))
+                        best = i;
+                if (best == RESOT_PROF_SLOTS || module[t][best].hits * 200 < total[t])
+                    break;
+                fprintf(stderr, " %s %.1f%%", module[t][best].name,
+                        100.0 * module[t][best].hits / total[t]);
+                module[t][best].hits = 0;
+            }
+            fprintf(stderr, "\n");
         }
         fflush(stderr);
         memset(slot, 0, sizeof slot);
+        memset(module, 0, sizeof module);
+        SymRefreshModuleList(GetCurrentProcess());   /* RE-SoT: names in DLLs loaded since */
         total[0] = total[1] = 0;
 
         /* Pick the next window's two threads: the busiest of this one. */
@@ -408,9 +523,15 @@ static void resot_thread_dump_start(void)
     }
     {
     const char *e = getenv("RESOT_THREAD_DUMP_SECS");
+    const char *stall = getenv("RESOT_STALL_DUMP");
     int secs = e ? atoi(e) : 0;
     HANDLE th;
 
+    if (!(stall && *stall == '0')) {
+        th = CreateThread(NULL, 0, resot_stall_watch_main, NULL, 0, NULL);
+        if (th)
+            CloseHandle(th);
+    }
     if (secs <= 0)
         return;
     th = CreateThread(NULL, 0, resot_thread_dump_main, (LPVOID)(uintptr_t)secs, 0, NULL);
@@ -574,6 +695,47 @@ extern int  xbox_OhciHandleMmio(void *ctx, uint32_t xbox_va);
 #define APU_TRAP_BASE 0xFE800000u
 #define APU_TRAP_END  0xFE880000u
 
+/* RE-SoT: a fault inside a driver has no frames StackWalk can follow. Name the
+ * thread and the module, and list stack words that point into loaded code:
+ * candidates, not a verified call chain (stale slots can match). */
+static void print_native_fault_context(const CONTEXT *ctx)
+{
+    typedef HRESULT (WINAPI *GetDescription)(HANDLE, PWSTR *);
+    GetDescription get = (GetDescription)(void *)GetProcAddress(
+        GetModuleHandleA("kernel32.dll"), "GetThreadDescription");
+    PWSTR name = NULL;
+    const DWORD64 *sp = (const DWORD64 *)ctx->Rsp;
+    MEMORY_BASIC_INFORMATION mbi;
+    unsigned printed = 0;
+    fprintf(stderr, "  Thread %lu", GetCurrentThreadId());
+    if (get && SUCCEEDED(get(GetCurrentThread(), &name)) && name) {
+        fprintf(stderr, " \"%ls\"", name);
+        LocalFree(name);
+    }
+    fprintf(stderr, " rsp=%p\n", sp);
+    if (!VirtualQuery(sp, &mbi, sizeof mbi) || mbi.State != MEM_COMMIT) return;
+    {
+        const DWORD64 *end = (const DWORD64 *)((const char *)mbi.BaseAddress + mbi.RegionSize);
+        for (unsigned i = 0; i < 2048 && sp + i < end && printed < 32; i++) {
+            HMODULE module;
+            char path[MAX_PATH];
+            MEMORY_BASIC_INFORMATION code;
+            const void *value = (const void *)sp[i];
+            if ((sp[i] >> 47) || !VirtualQuery(value, &code, sizeof code)
+                    || !(code.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE | PAGE_EXECUTE_READWRITE))
+                    || !GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                                         | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                           (LPCSTR)value, &module)
+                    || !GetModuleFileNameA(module, path, sizeof path))
+                continue;
+            fprintf(stderr, "    stack+%03X %s+0x%llX\n", i * 8,
+                    strrchr(path, '\\') ? strrchr(path, '\\') + 1 : path,
+                    (unsigned long long)(sp[i] - (DWORD64)module));
+            printed++;
+        }
+    }
+}
+
 static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
 {
     if (ep->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
@@ -626,6 +788,7 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
             (unsigned long long)ep->ContextRecord->Rip,
             (unsigned long long)fault_addr,
             ep->ExceptionRecord->ExceptionInformation[0] ? "write" : "read");
+        print_native_fault_context(ep->ContextRecord);
         fprintf(stderr, "  Xbox regs: eax=0x%08X ecx=0x%08X edx=0x%08X esp=0x%08X\n",
             g_eax, g_ecx, g_edx, g_esp);
         fprintf(stderr, "  Xbox regs: ebx=0x%08X esi=0x%08X edi=0x%08X\n",
@@ -806,6 +969,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         extern void xbox_FramebufferSetWowProvider(void (*)(char *, size_t));
         xbox_FramebufferSetWowProvider(resot_current_wow);
         xbox_FramebufferSetMenuPointer(resot_menu_pointer_event,resot_menu_scene,resot_menu_pointer_viewport);
+    }
+    {
+        extern void xbox_FramebufferSetMenuCursor(void *);
+        xbox_FramebufferSetMenuCursor(resot_light_cursor());
     }
     resot_options_init();
 

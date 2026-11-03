@@ -86,6 +86,7 @@ static int s_joy_was[25], s_key_was[256], s_walk, s_walk_was;
 static int s_keyboard_enabled = 1, s_mouse_speed = 43, s_walk_deflection = 12000;
 static int s_look_sensitivity = 200;
 static char s_path[1200];
+static int s_gpu_turbo; /* RE-SoT: INI only, see port/android/README.md. */
 
 extern int  xbox_FramebufferKeyDown(int);
 extern void xbox_FramebufferTakeMouse(int *, int *);
@@ -104,8 +105,18 @@ long resot_native_revision(void) { return InterlockedCompareExchange(&s_revision
 /* Game behavior, as on Windows (port/windows/src/options.c): Tutorials is
  * kept in [Game]; this host has no panel for the Dagger of time yet, so
  * it stays as the game has it. */
-static int s_tutorials = 1;
+static int s_tutorials = 1, s_game_language = 1, s_game_language_next = 1;
 int resot_game_tutorials(void) { return s_tutorials; }
+int resot_game_language(void) { return s_game_language; }
+int resot_game_language_next(void) { return s_game_language_next; }
+static int save_config(void);
+void resot_game_language_choose(int language)
+{
+    if (!resot_language_supported(language) || language == s_game_language_next) return;
+    s_game_language_next = language;
+    save_config();
+    mark_dirty();
+}
 int resot_game_dagger(void) { return -1; }
 /* No Cheats row here either: the game's menus have their own Cheats choice. */
 int resot_game_cheats_request(void) { return -1; }
@@ -171,9 +182,10 @@ static int save_config(void)
     fprintf(f, "[Graphics]\nRenderer=vulkan\nFPSLimit=%d\nVSync=%d\nInternalResolutionPercent=%d\n",
             s_fps, s_vsync,s_render_scales[s_resolution]);
     fprintf(f,"GraphicsPreset=%d\n",s_post_quality);
+    fprintf(f,"GpuTurbo=%d\n",s_gpu_turbo);
     fprintf(f,"[Diagnostics]\nConsoleLogs=%d\n",s_console_logs);
     fprintf(f, "[Controls]\nLookSensitivityPercent=%d\n",s_look_sensitivity);
-    fprintf(f, "[Game]\nTutorials=%d\n",s_tutorials);
+    fprintf(f, "[Game]\nLanguage=%d\nTutorials=%d\n",s_game_language_next,s_tutorials);
     fprintf(f, "[Keyboard]\n");
     for (i = 0; i < ACTIONS; i++) fprintf(f, "Action%d=%d\n", i, s_keys[i]);
     fprintf(f, "[Joystick]\n");
@@ -411,7 +423,17 @@ void resot_options_init(void)
     if (s_walk_deflection < 1000) s_walk_deflection = 1000;
     if (s_walk_deflection > 32767) s_walk_deflection = 32767;
     snprintf(s_path, sizeof s_path, "%s/resot-options.ini", resot_android_data_dir());
+    s_game_language=ini_get("Game","Language",1);
+    if(!resot_language_supported(s_game_language))s_game_language=1;
+    s_game_language_next=s_game_language;
     s_look_sensitivity = resot_look_percent(ini_get("Controls","LookSensitivityPercent",200));
+    s_gpu_turbo = ini_get("Graphics","GpuTurbo",0) != 0;
+#if !defined(RESOT_PS5) /* RE-SoT (PS5): Adreno turbo only; the console has no driver_android.c. */
+    {
+        extern void resot_android_gpu_turbo_option(int);
+        resot_android_gpu_turbo_option(s_gpu_turbo);
+    }
+#endif
     s_fps = ini_get("Graphics", "FPSLimit", 0);
     if (s_fps != 0 && s_fps != 30 && s_fps != 60 && s_fps != 120) s_fps = 0;
     env = getenv("RECOMP_HW_VSYNC");

@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "options.h"
+#include "cursor.h"
 
 enum { PW = 520, PH = 612, BODY_TOP = 64, BODY_BOTTOM = 566,
        ROW_H = 29, APPLY_SIZE = WM_APP + 44 };
@@ -96,7 +97,7 @@ static int s_keyboard_enabled=1, s_mouse_speed=43, s_walk_deflection=12000;
 static int s_look_sensitivity=200;
 /* Game behavior: Tutorials is saved ([Game] Tutorials); the Dagger of time
  * (-1 as the game has it, 0 off, 1 on) applies to the running game only. */
-static int s_game_expanded, s_tutorials=1, s_dagger=-1;
+static int s_game_expanded, s_tutorials=1, s_dagger=-1, s_game_language=1, s_game_language_next=1;
 /* Cheats: the title's built-in switch (port/game/resot_cheats.h), as the
  * game reports it (-1 not readable yet) and a change asked for here (-1
  * none), taken by the game thread. */
@@ -122,6 +123,17 @@ extern void xbox_InputSetHostFilter(void (*)(void *, unsigned));
 static void mark_dirty(void) { InterlockedIncrement(&s_revision); InterlockedExchange(&s_dirty,1); }
 long resot_native_revision(void) { return InterlockedCompareExchange(&s_revision,0,0); }
 int resot_game_tutorials(void) { return s_tutorials; }
+int resot_game_language(void) { return s_game_language; }
+int resot_game_language_next(void) { return s_game_language_next; }
+void resot_game_language_choose(int language)
+{
+    char value[8];
+    if(!resot_language_supported(language)||language==s_game_language_next)return;
+    s_game_language_next=language;
+    sprintf_s(value,sizeof value,"%d",language);
+    if(s_path[0])WritePrivateProfileStringA("Game","Language",value,s_path);
+    mark_dirty();
+}
 int resot_game_dagger(void) { return s_dagger; }
 int resot_game_cheats_request(void) { return (int)InterlockedExchange(&s_cheats_request,-1); }
 void resot_game_cheats_report(int on) { InterlockedExchange(&s_cheats_state,on); InterlockedExchange(&s_dirty,1); }
@@ -311,7 +323,9 @@ static int event(void *handle, unsigned message, uintptr_t wp, intptr_t lp)
         return native_event(handle,message,wp,lp);
     }
     if (message==WM_SYSKEYDOWN && wp==VK_F4 && (lp&(1L<<29))) return 0;
-    if (message==WM_SETCURSOR) { SetCursor(LoadCursorA(NULL,IDC_ARROW)); return 1; }
+    if (message==WM_SETCURSOR && LOWORD(lp)==HTCLIENT) {
+        SetCursor(resot_light_cursor()); return 1;
+    }
     /* Capture changes, resize and focus messages can arrive synchronously
      * inside SetCapture/SetWindowPos. They need no options lock or handling. */
     switch(message) {
@@ -764,6 +778,9 @@ void resot_options_init(void)
     slash=strrchr(s_path,'\\');if(slash)slash[1]=0;else s_path[0]=0;
     if(strlen(s_path)+strlen("resot-options.ini")>=sizeof s_path)return;
     strcat(s_path,"resot-options.ini");
+    s_game_language=(int)GetPrivateProfileIntA("Game","Language",1,s_path);
+    if(!resot_language_supported(s_game_language))s_game_language=1;
+    s_game_language_next=s_game_language;
     s_look_sensitivity=resot_look_percent((int)GetPrivateProfileIntA("Controls","LookSensitivityPercent",200,s_path));
     GetPrivateProfileStringA("Graphics","Renderer","d3d11",name,sizeof name,s_path);
     env=getenv("RESOT_RENDERER");
