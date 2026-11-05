@@ -1,27 +1,32 @@
 <p align="center">
-  <img src="docs/media/reSOT_logo.png" alt="reSOT" width="256">
+  <img src="docs/media/reSOT_logo.png" alt="reSOT — The Sands of Time" width="256">
 </p>
 
-# rePOP-ps5
-
-**Prince of Persia: The Sands of Time on PS5, as a native app.**
-
-rePOP-ps5 is a fork of [FulGerNet/rePOP](https://github.com/FulGerNet/rePOP)
-that adds a PS5 host to reSOT, the static recompilation of the Xbox retail
-game. The original game's code runs as native code on the console against
-reSOT's replacement for the Xbox hardware, with Vulkan rendering (RADV),
-DualSense input and PS5 audio. Windows and Android builds come from
-[upstream](https://github.com/FulGerNet/rePOP); this fork is only about the
-PS5.
-
-**You need your own game.** The app contains no game data and no Xbox
-executable. It runs the files of your own Xbox retail disc.
+<p align="center">
+  <b>Prince of Persia: The Sands of Time, the original Xbox version, statically recompiled<br>
+  into a native app for homebrew-enabled PS5 consoles.</b>
+</p>
 
 <p align="center">
   <a href="https://recompstore.com/game/PPSA99023"><img src="https://img.shields.io/badge/Get_it_on-RecompStore-20d9d2?style=for-the-badge" alt="Get it on RecompStore" height="40"></a>
   &nbsp;
   <a href="https://prosperostore.net/app/PPSA99023/"><img src="https://img.shields.io/badge/Get_it_on-ProsperoStore-2563eb?style=for-the-badge" alt="Get it on ProsperoStore" height="40"></a>
 </p>
+
+<p align="center">
+  <a href="#install"><b>Install</b></a>
+  &nbsp;·&nbsp;
+  <a href="#controls">Controls</a>
+  &nbsp;·&nbsp;
+  <a href="#settings">Settings</a>
+  &nbsp;·&nbsp;
+  <a href="#reporting-a-bug">Report a bug</a>
+</p>
+
+> [!IMPORTANT]
+> **Bring your own game.**
+> This project does not include or distribute copyrighted game files. Use a dump of your own original disc.
+> Please do not request or share game downloads here.
 
 <p align="center">
   <img src="docs/media/ps5-title.jpg" alt="Title screen" width="49%">
@@ -35,49 +40,24 @@ executable. It runs the files of your own Xbox retail disc.
 <p align="center"><sub>Screenshots taken on a PS5 with the US disc's files
 at 1440p (3x) internal resolution.</sub></p>
 
-## Status
+## What it is
 
-Version **01.005.000**, based on upstream reSOT v0.5.0. On the console
-(2026-11-03): menus, the five-language page and about three minutes of the
-first level at 59.7-60.0 fps with the direct renderer. Upstream v0.4.4 draws through the direct renderer
-by default, replays the retail game's recorded command buffers from the GPU
-and lets the game run up to two frames ahead of the renderer
-([release notes](docs/releases/v0.4.4.md)); v0.5.0 adds German and Italian
-and the European disc. The PS5 app still accepts only the USA disc's
-`default.xbe`. The console results below are from 01.004.001 and earlier.
-Tested on one console: FW 13.40, kstuff-lite 1.11, ShadowMountPlus
-1.7-beta5fix1.
+A PS5 fork of [FulGerNet/rePOP](https://github.com/FulGerNet/rePOP), the reSOT static
+recompilation. The PS5 host provides Vulkan rendering through RADV, DualSense input and
+AudioOut sound. Windows and Android builds are maintained upstream.
 
-Upstream v0.4.0 brings Special Load Map and a built-in cheats switch in reSOT
-Options (main and pause menus), an HD menu font, and fixes for the crash in
-7601 Salle and for the Prince with only a head after a map change; see its
-[release notes](docs/releases/v0.4.0.md). With 01.004.000 on the console:
-Special Load Map loads a chosen map, the cheats
-switch works in play, 7601 Salle no longer crashes, the Prince keeps his body
-after a map change, and a fresh install starts at 2160p with the Full preset.
+## Highlights
 
-Seen on the console (01.003.006 and 01.004.000):
+- **4K output**, with adjustable internal resolution, graphics preset, frame limit and VSync.
+- **DualSense prompts** in the game's menus and gameplay.
+- **In-game options**, including Special Load Map and a cheats switch.
+- **Separate user data**, so app updates keep your saves and settings.
 
-- title screen, menus, the profile keyboard, the opening cutscene and early
-  gameplay, with correct lighting, fog and textures;
-- 3840x2160 output, and about 60 fps in play at 1440p (3x) and at 2160p
-  (4.5x) internal resolution with the Full graphics preset;
-- the app finding the disc files in `/data/reSOT/xbox-retail`;
-- PlayStation buttons in the game's prompts (Cross, Circle, L1 and R1 seen
-  so far).
+## Requirements
 
-A new install starts at 2160p (4.5x, the 4K output's size) with the Full
-preset and VSync on; until 01.004.000 it started at 1440p with the Standard
-preset (the README said Full). The internal resolution, the graphics preset,
-the frame limit and VSync can be changed in the game's reSOT Options, Graphics. The story cutscenes
-(640x346 movies) fill the 16:9 screen, cropping about 2% at each side, and
-movies are scaled up with a bicubic filter; the full-screen cutscenes have
-not been seen on the console yet.
-
-Not checked yet: sound, controller input through a whole level, rumble,
-saves, later levels, game files on USB or extended storage, other firmware
-and loaders, and the Xbox demo.
-What was run and seen is recorded in [docs/VALIDATION.md](docs/VALIDATION.md).
+- A homebrew-enabled PS5 with ShadowMountPlus and an FTP server.
+- A dump of your own **USA Xbox retail disc** of *The Sands of Time*.
+  The executable must match `RESOT_XBE_SHA256` in `source/xbox-retail/target.h`.
 
 ## Install
 
@@ -97,8 +77,7 @@ You still need to provide your own disc files as described below.
    revision is refused, because the recompiled addresses are only valid for
    that file. If no usable files are found, the app says where to copy them.
 
-Options, shader caches, saves and logs are kept in `/data/reSOT/PPSA99023/`,
-so replacing the app keeps them.
+**To update,** replace the `PPSA99023` app folder. Your user data is kept separately.
 
 ## Controls
 
@@ -106,31 +85,43 @@ DualSense: Cross/Circle/Square/Triangle = A/B/X/Y, L1/R1 = White/Black,
 L2/R2 = the triggers, Options = Start, touchpad click = Back. Controls can be
 changed in the game's reSOT Options menu.
 
-## Building
+## Settings
 
-The app is built on macOS with the public PS5 PayloadSDK, Clang 18, SDL3 and
-RADV; no Sony SDK is used. Setup, build, packaging and the folder install
-over FTP are in [port/ps5/README.md](port/ps5/README.md). The recompiled
-game code in `source/xbox-retail/gen/` is upstream's and is not changed here.
+Open **reSOT Options → Graphics** to change internal resolution, graphics preset, frame
+limit and VSync. A fresh install defaults to 2160p (4.5x), the Full preset and VSync on.
 
-## How it works
+## Your files
 
-```text
-Your default.xbe -> analyse and lift x86 to C -> native compiler
-                                                   |
-                 original game + linked Xbox libraries
-                                                   |
-                    reSOT platform and Xbox runtime
-                                                   |
-             PS5 host: SDL3 GPU over Vulkan/RADV, DualSense, AudioOut
-```
+Saves, options, shader caches and logs are stored in `/data/reSOT/PPSA99023/`.
+Disc files are kept separately in `/data/reSOT/xbox-retail/`.
 
-The original BigFile loader, Jade engine, compiled AI, Bink decoder and Xbox
-Direct3D code remain in the lifted program. reSOT replaces kernel services,
-memory, threads, input, audio and video, and translates the NV2A pushbuffer
-to host GPU rendering. The PS5 host adds direct-memory Xbox RAM, MMIO
-decoding in the signal handler and a VideoOut path for SDL3; details in
-[port/ps5/README.md](port/ps5/README.md) and [docs/RECOMP.md](docs/RECOMP.md).
+## Known issues
+
+Version **01.005.000** is based on upstream reSOT v0.5.0. Only the **USA Xbox disc** is
+accepted by the PS5 build, even though upstream also supports the European release.
+
+On 2026-11-03, this build was checked through the menus, the five-language page and about
+three minutes of the first level at 59.7–60.0 fps. Earlier builds were also checked at
+1440p and 2160p internal resolution. These checks do not establish full-game stability.
+
+Sound, input through a whole level, rumble, saves, later levels, USB/extended-storage game
+files, other firmware and loaders, and the Xbox demo remain unverified. Full-screen movie
+cropping and scaling also await console verification.
+
+Test setup: FW 13.40, kstuff-lite 1.11 and ShadowMountPlus 1.7-beta5fix1.
+See [validation records](docs/VALIDATION.md) and [release notes](docs/releases/).
+
+## Reporting a bug
+
+Open an [issue](../../issues) with the app version, firmware, steps to reproduce, expected
+result and actual result. Include relevant logs from `/data/reSOT/PPSA99023/`.
+Do not attach game files or disc images. Report PS5-specific problems here rather than upstream.
+
+## For developers
+
+The macOS build uses the public PS5 PayloadSDK, Clang 18, SDL3 and RADV.
+See [build and packaging instructions](port/ps5/README.md) and the
+[recompilation overview](docs/RECOMP.md) for the platform layer and runtime details.
 
 ## Credits
 
@@ -147,7 +138,7 @@ decoding in the signal handler and a VideoOut path for SDL3; details in
 Problems with the PS5 build belong here, not upstream: upstream does not
 maintain or support it.
 
-## Licence
+## License
 
 reSOT's own files are MIT ([LICENSE](LICENSE)). The vendored runtime includes
 MIT and LGPL-2.1-or-later components, and the PS5 executable follows
