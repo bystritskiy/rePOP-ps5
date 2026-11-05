@@ -126,6 +126,9 @@ own build folder; it has not been packaged or run on a console.
 
 ## Installing
 
+You can also install the app from [RecompStore](https://recompstore.com/game/PPSA99023) or [ProsperoStore](https://prosperostore.net/app/PPSA99023/).
+You still need to provide your own disc files as described below.
+
 **Folder (recommended while developing).** ShadowMountPlus mounts
 `/data/homebrew/PPSA99023/` the same way as an image (nullfs onto
 `/system_ex/app/PPSA99023`), so only changed files need to be copied. With

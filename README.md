@@ -81,6 +81,9 @@ What was run and seen is recorded in [docs/VALIDATION.md](docs/VALIDATION.md).
 
 ## Install
 
+You can also install the app from [RecompStore](https://recompstore.com/game/PPSA99023) or [ProsperoStore](https://prosperostore.net/app/PPSA99023/).
+You still need to provide your own disc files as described below.
+
 1. Download `PPSA99023-<version>.zip` from
    [Releases](https://github.com/bystritskiy/rePOP-ps5/releases), extract it
    and copy the `PPSA99023` folder to `/data/homebrew/` on the console.
